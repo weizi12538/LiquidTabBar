@@ -1,0 +1,9 @@
+Package: com.ltb.liquidtabbar
+Name: 液态底栏 LiquidTabBar
+Depends: mobilesubstrate
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: WeChat liquid-glass tab bar with built-in music player and quick panel
+Maintainer: ltb
+Author: ltb
+Section: Tweaks
