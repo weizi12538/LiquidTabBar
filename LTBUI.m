@@ -55,56 +55,90 @@ static NSArray *QuickItems(void) {
 - (void)toast:(NSString *)t;
 @end
 
-#pragma mark - curved glass (self-drawn, no backdrop blur => smooth)
+#pragma mark - shapes
+// rounded "pillow" (used by panels)
 static UIBezierPath *Pillow(CGRect r, CGFloat cr, CGFloat btop, CGFloat bbot, CGFloat bside) {
     CGFloat l = r.origin.x + bside, t = r.origin.y + btop, rr = CGRectGetMaxX(r) - bside, bt = CGRectGetMaxY(r) - bbot;
     CGFloat mx = CGRectGetMidX(r), my = (t + bt) / 2;
     CGFloat m = MIN(rr - l, bt - t) / 2; cr = MAX(1.0, MIN(cr, m));
-    BOOL side = (bt - t - 2 * cr) > 1;
+    BOOL side = (bt - t - 2 * cr) > 1, top = (rr - l - 2 * cr) > 1;
     UIBezierPath *p = [UIBezierPath bezierPath];
     [p moveToPoint:CGPointMake(l + cr, t)];
-    [p addQuadCurveToPoint:CGPointMake(rr - cr, t) controlPoint:CGPointMake(mx, t - 2 * btop)];
+    if (top) [p addQuadCurveToPoint:CGPointMake(rr - cr, t) controlPoint:CGPointMake(mx, t - 2 * btop)];
     [p addQuadCurveToPoint:CGPointMake(rr, t + cr) controlPoint:CGPointMake(rr, t)];
     if (side) [p addQuadCurveToPoint:CGPointMake(rr, bt - cr) controlPoint:CGPointMake(rr + 2 * bside, my)];
     [p addQuadCurveToPoint:CGPointMake(rr - cr, bt) controlPoint:CGPointMake(rr, bt)];
-    [p addQuadCurveToPoint:CGPointMake(l + cr, bt) controlPoint:CGPointMake(mx, bt + 2 * bbot)];
+    if (top) [p addQuadCurveToPoint:CGPointMake(l + cr, bt) controlPoint:CGPointMake(mx, bt + 2 * bbot)];
     [p addQuadCurveToPoint:CGPointMake(l, bt - cr) controlPoint:CGPointMake(l, bt)];
     if (side) [p addQuadCurveToPoint:CGPointMake(l, t + cr) controlPoint:CGPointMake(l - 2 * bside, my)];
     [p addQuadCurveToPoint:CGPointMake(l + cr, t) controlPoint:CGPointMake(l, t)];
     [p closePath];
     return p;
 }
+// bent capsule: constant thickness (2*rad) along a parabola, ends lower than the middle by `drop` (the reference's banana shape)
+static CGFloat CapCY(CGRect r, CGFloat rad, CGFloat drop, CGFloat x) {
+    CGFloat hs = MAX(1.0, r.size.width / 2 - rad), u = MAX(-1.0, MIN(1.0, (x - CGRectGetMidX(r)) / hs));
+    return r.origin.y + r.size.height / 2 - drop / 2 + drop * u * u;
+}
+static CGFloat CapAngle(CGRect r, CGFloat rad, CGFloat drop, CGFloat x) {
+    CGFloat hs = MAX(1.0, r.size.width / 2 - rad), u = MAX(-1.0, MIN(1.0, (x - CGRectGetMidX(r)) / hs));
+    return atan(2 * drop * u / hs);
+}
+static UIBezierPath *ArcCapsule(CGRect r, CGFloat rad, CGFloat drop) {
+    CGFloat x0 = r.origin.x + rad, x1 = CGRectGetMaxX(r) - rad; int N = 36, C = 14;
+    UIBezierPath *p = [UIBezierPath bezierPath];
+    void (^frame)(CGFloat, CGFloat *, CGFloat *, CGFloat *, CGFloat *, CGFloat *) = ^(CGFloat x, CGFloat *cy, CGFloat *nx, CGFloat *ny, CGFloat *tx, CGFloat *ty) {
+        CGFloat hs = MAX(1.0, (x1 - x0) / 2), u = (x - (x0 + x1) / 2) / hs, s = 2 * drop * u / hs, k = sqrt(1 + s * s);
+        *cy = r.origin.y + r.size.height / 2 - drop / 2 + drop * u * u; *nx = s / k; *ny = -1 / k; *tx = 1 / k; *ty = s / k;
+    };
+    CGFloat cy, nx, ny, tx, ty;
+    for (int i = 0; i <= N; i++) {
+        CGFloat x = x0 + (x1 - x0) * i / N; frame(x, &cy, &nx, &ny, &tx, &ty);
+        CGPoint pt = CGPointMake(x + rad * nx, cy + rad * ny); if (i == 0) [p moveToPoint:pt]; else [p addLineToPoint:pt];
+    }
+    frame(x1, &cy, &nx, &ny, &tx, &ty);
+    for (int j = 1; j < C; j++) { CGFloat th = M_PI * j / C; [p addLineToPoint:CGPointMake(x1 + rad * (cos(th) * nx + sin(th) * tx), cy + rad * (cos(th) * ny + sin(th) * ty))]; }
+    for (int i = N; i >= 0; i--) {
+        CGFloat x = x0 + (x1 - x0) * i / N; frame(x, &cy, &nx, &ny, &tx, &ty); [p addLineToPoint:CGPointMake(x - rad * nx, cy - rad * ny)];
+    }
+    frame(x0, &cy, &nx, &ny, &tx, &ty);
+    for (int j = 1; j < C; j++) { CGFloat th = M_PI + M_PI * j / C; [p addLineToPoint:CGPointMake(x0 + rad * (cos(th) * nx + sin(th) * tx), cy + rad * (cos(th) * ny + sin(th) * ty))]; }
+    [p closePath];
+    return p;
+}
 
+#pragma mark - glass (blurred, clipped to a custom shape)
 @interface LTBGlass : UIView
 @property(nonatomic) CGFloat radius, bulge;
 @property(nonatomic, readonly) UIView *contentView;
 @end
 @implementation LTBGlass {
-    CAShapeLayer *_fill, *_rim; UIView *_content;
+    UIVisualEffectView *_blur; CAShapeLayer *_fill, *_rim, *_mask; UIView *_content;
 }
 - (instancetype)init {
     if (!(self = [super init])) return nil;
     _radius = 24; _bulge = 0;
-    _fill = [CAShapeLayer layer]; _fill.shadowColor = UIColor.blackColor.CGColor; _fill.shadowOffset = CGSizeMake(0, 5); _fill.shadowRadius = 12;
-    _rim = [CAShapeLayer layer]; _rim.fillColor = nil; _rim.lineWidth = 1.0;
-    [self.layer addSublayer:_fill]; [self.layer addSublayer:_rim];
+    _blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]]; _blur.hidden = !LTBBool(@"blur", YES);
+    [self addSubview:_blur];
+    _fill = [CAShapeLayer layer]; [self.layer addSublayer:_fill];
     _content = [UIView new]; _content.backgroundColor = UIColor.clearColor; [self addSubview:_content];
+    _rim = [CAShapeLayer layer]; _rim.fillColor = nil; _rim.lineWidth = 1.4; [self.layer addSublayer:_rim];
+    _mask = [CAShapeLayer layer]; self.layer.mask = _mask;
     return self;
 }
 - (UIView *)contentView { return _content; }
 - (void)updateColors {
-    UITraitCollection *tc = self.traitCollection; BOOL dark = tc.userInterfaceStyle == UIUserInterfaceStyleDark;
-    _fill.fillColor = [Dyn(0.985, 0.93, 0.13, 0.93) resolvedColorWithTraitCollection:tc].CGColor;
-    _rim.strokeColor = [Dyn(1.0, 0.95, 1.0, 0.16) resolvedColorWithTraitCollection:tc].CGColor;
-    _fill.shadowOpacity = dark ? 0.45 : 0.16;
+    UITraitCollection *tc = self.traitCollection; BOOL blur = !_blur.hidden;
+    _fill.fillColor = [(blur ? Dyn(1, 0.62, 0.10, 0.52) : Dyn(0.985, 0.94, 0.13, 0.93)) resolvedColorWithTraitCollection:tc].CGColor;
+    _rim.strokeColor = [Dyn(1.0, 0.95, 1.0, 0.22) resolvedColorWithTraitCollection:tc].CGColor;
 }
 - (void)traitCollectionDidChange:(UITraitCollection *)p { [super traitCollectionDidChange:p]; [self updateColors]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGRect b = self.bounds; _content.frame = b; if (b.size.width < 2) return;
+    CGRect b = self.bounds; _blur.frame = b; _content.frame = b; if (b.size.width < 2) return;
     UIBezierPath *p = Pillow(b, _radius, _bulge, _bulge * 0.5, _bulge * 0.4);
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    _fill.frame = b; _fill.path = p.CGPath; _fill.shadowPath = p.CGPath; _rim.frame = b; _rim.path = p.CGPath;
+    _fill.frame = b; _fill.path = p.CGPath; _rim.frame = b; _rim.path = p.CGPath; _mask.frame = b; _mask.path = p.CGPath;
     [CATransaction commit];
     [self updateColors];
 }
@@ -127,13 +161,13 @@ static UIBezierPath *Pillow(CGRect r, CGFloat cr, CGFloat btop, CGFloat bbot, CG
 @end
 
 @implementation LTBBar {
-    LTBGlass *_tab, *_strip, *_left, *_right;
+    UIVisualEffectView *_blur; CAShapeLayer *_fill, *_rim, *_mask;
     UIView *_pill, *_p0, *_p1, *_trk, *_fil;
     NSMutableArray<UIButton *> *_items; NSMutableArray<UILabel *> *_badges; NSMutableArray<NSString *> *_badgeCache;
-    UIButton *_plus, *_prev, *_play, *_next, *_lb, *_rb;
-    UIImageView *_art; UIScrollView *_sv; UIPageControl *_pc;
+    UIButton *_prev, *_play, *_next, *_lb, *_rb;
+    UIImageView *_art, *_disc; UIScrollView *_sv; UIPageControl *_pc;
     UILabel *_title, *_artist, *_searchLbl;
-    NSInteger _sel; CGFloat _stripTop;
+    NSInteger _sel; CGFloat _stripTop; CGRect _tabR, _stripR;
 }
 - (CGFloat)stripTop { return _stripTop; }
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e { UIView *v = [super hitTest:p withEvent:e]; return v == self ? nil : v; }
@@ -141,48 +175,52 @@ static UIBezierPath *Pillow(CGRect r, CGFloat cr, CGFloat btop, CGFloat bbot, CG
 - (instancetype)initWithFrame:(CGRect)f controller:(UITabBarController *)t {
     if (!(self = [super initWithFrame:f])) return nil;
     _tbc = t; _items = [NSMutableArray array]; _badges = [NSMutableArray array]; _badgeCache = [NSMutableArray array]; _sel = -1;
-    _tab = [LTBGlass new]; [self addSubview:_tab];
-    _pill = [UIView new]; _pill.backgroundColor = Dyn(0.90, 1, 0.26, 1); _pill.layer.cornerCurve = kCACornerCurveContinuous; _pill.userInteractionEnabled = NO;
-    [_tab.contentView addSubview:_pill];
+    _blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]]; _blur.hidden = !LTBBool(@"blur", YES);
+    [self addSubview:_blur];
+    _fill = [CAShapeLayer layer]; _rim = [CAShapeLayer layer]; _rim.fillColor = nil; _rim.lineWidth = 1.6;
+    [self.layer addSublayer:_fill]; [self.layer addSublayer:_rim];
+    _mask = [CAShapeLayer layer]; _blur.layer.mask = _mask;
+
+    _pill = [UIView new]; _pill.backgroundColor = Dyn(0.0, 0.07, 1.0, 0.10); _pill.layer.cornerCurve = kCACornerCurveContinuous; _pill.userInteractionEnabled = NO;
+    [self addSubview:_pill];
     NSArray *sym = @[@"envelope", @"person.2", @"safari", @"person"];
     NSUInteger n = t.viewControllers.count;
     for (NSUInteger i = 0; i < n; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem]; b.tag = i; b.tintColor = [UIColor labelColor];
         UITabBarItem *it = t.viewControllers[i].tabBarItem;
-        if (n == 4) [b setImage:SF(sym[i], 22, UIImageSymbolWeightRegular) forState:UIControlStateNormal];
+        if (n == 4) [b setImage:SF(sym[i], 24, UIImageSymbolWeightLight) forState:UIControlStateNormal];
         else [b setImage:[it.image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate] forState:UIControlStateNormal];
         [b addTarget:self action:@selector(tapItem:) forControlEvents:UIControlEventTouchUpInside];
-        [_tab.contentView addSubview:b]; [_items addObject:b];
-        UILabel *bg = [UILabel new]; bg.backgroundColor = UIColor.labelColor; bg.textColor = UIColor.systemBackgroundColor; bg.font = [UIFont boldSystemFontOfSize:11];
-        bg.textAlignment = NSTextAlignmentCenter; bg.layer.cornerRadius = 9; bg.clipsToBounds = YES; bg.hidden = YES; bg.userInteractionEnabled = NO;
-        [_tab.contentView addSubview:bg]; [_badges addObject:bg]; [_badgeCache addObject:@""];
+        [self addSubview:b]; [_items addObject:b];
+        UILabel *bg = [UILabel new]; bg.backgroundColor = UIColor.labelColor; bg.textColor = UIColor.systemBackgroundColor; bg.font = [UIFont boldSystemFontOfSize:9.5];
+        bg.textAlignment = NSTextAlignmentCenter; bg.layer.cornerRadius = 7.5; bg.clipsToBounds = YES; bg.hidden = YES; bg.userInteractionEnabled = NO;
+        [self addSubview:bg]; [_badges addObject:bg]; [_badgeCache addObject:@""];
     }
-    _plus = [UIButton buttonWithType:UIButtonTypeSystem]; _plus.layer.cornerRadius = 26; _plus.layer.shadowOpacity = 0.14; _plus.layer.shadowRadius = 6; _plus.layer.shadowOffset = CGSizeMake(0, 3);
-    [_plus addTarget:self action:@selector(tapPlus) forControlEvents:UIControlEventTouchUpInside]; [_tab.contentView addSubview:_plus];
-    self.quickOpen = NO;
+    _disc = [UIImageView new]; _disc.contentMode = UIViewContentModeScaleAspectFill; _disc.clipsToBounds = YES; _disc.userInteractionEnabled = YES;
+    [_disc addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapMini)]];
+    [_disc addGestureRecognizer:[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(longDisc:)]];
+    [self addSubview:_disc];
 
-    _strip = [LTBGlass new]; [self addSubview:_strip];
-    _sv = [UIScrollView new]; _sv.pagingEnabled = YES; _sv.showsHorizontalScrollIndicator = NO; _sv.delegate = self; _sv.bounces = NO; [_strip.contentView addSubview:_sv];
+    _sv = [UIScrollView new]; _sv.pagingEnabled = YES; _sv.showsHorizontalScrollIndicator = NO; _sv.delegate = self; _sv.bounces = NO; [self addSubview:_sv];
     _p0 = [UIView new]; _p1 = [UIView new]; [_sv addSubview:_p0]; [_sv addSubview:_p1];
     _art = [UIImageView new]; _art.contentMode = UIViewContentModeScaleAspectFill; _art.clipsToBounds = YES; _art.userInteractionEnabled = YES;
     [_art addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapMini)]];
-    _title = [UILabel new]; _title.font = [UIFont boldSystemFontOfSize:14]; _title.textColor = UIColor.labelColor; _title.userInteractionEnabled = YES;
+    _title = [UILabel new]; _title.font = [UIFont boldSystemFontOfSize:16]; _title.textColor = UIColor.labelColor; _title.userInteractionEnabled = YES;
     [_title addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapMini)]];
-    _artist = [UILabel new]; _artist.font = [UIFont systemFontOfSize:11]; _artist.textColor = UIColor.secondaryLabelColor;
+    _artist = [UILabel new]; _artist.font = [UIFont systemFontOfSize:12]; _artist.textColor = UIColor.secondaryLabelColor;
     _trk = [UIView new]; _trk.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.25]; _trk.layer.cornerRadius = 1;
     _fil = [UIView new]; _fil.backgroundColor = UIColor.labelColor; _fil.layer.cornerRadius = 1; [_trk addSubview:_fil];
-    _prev = Btn(@"backward.end.fill", 13, self, @selector(doPrev)); _play = Btn(@"play.fill", 17, self, @selector(doPlay)); _next = Btn(@"forward.end.fill", 13, self, @selector(doNext));
+    _prev = Btn(@"backward.end.fill", 15, self, @selector(doPrev)); _play = Btn(@"play.fill", 19, self, @selector(doPlay)); _next = Btn(@"forward.end.fill", 15, self, @selector(doNext));
     for (UIView *v in @[_art, _title, _artist, _trk, _prev, _play, _next]) [_p0 addSubview:v];
     _searchLbl = [UILabel new]; _searchLbl.text = @"搜索音乐、歌手"; _searchLbl.font = [UIFont systemFontOfSize:14]; _searchLbl.textColor = UIColor.secondaryLabelColor; _searchLbl.textAlignment = NSTextAlignmentCenter; _searchLbl.userInteractionEnabled = YES;
     [_searchLbl addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapSearch)]];
     [_p1 addSubview:_searchLbl];
-    _pc = [UIPageControl new]; _pc.userInteractionEnabled = NO; _pc.transform = CGAffineTransformMakeScale(0.55, 0.55); [_strip.contentView addSubview:_pc];
+    _pc = [UIPageControl new]; _pc.userInteractionEnabled = NO; _pc.transform = CGAffineTransformMakeScale(0.55, 0.55); [self addSubview:_pc];
 
-    _left = [LTBGlass new]; _right = [LTBGlass new]; [self addSubview:_left]; [self addSubview:_right];
     _lb = [UIButton buttonWithType:UIButtonTypeSystem]; _rb = [UIButton buttonWithType:UIButtonTypeSystem]; _lb.tintColor = _rb.tintColor = UIColor.labelColor;
     [_lb addTarget:self action:@selector(tapLeft) forControlEvents:UIControlEventTouchUpInside];
     [_rb addTarget:self action:@selector(tapRight) forControlEvents:UIControlEventTouchUpInside];
-    [_left.contentView addSubview:_lb]; [_right.contentView addSubview:_rb];
+    [self addSubview:_lb]; [self addSubview:_rb];
 
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     for (NSString *nn in @[LTBNoteSong, LTBNoteState]) [nc addObserver:self selector:@selector(refresh) name:nn object:nil];
@@ -192,42 +230,52 @@ static UIBezierPath *Pillow(CGRect r, CGFloat cr, CGFloat btop, CGFloat bbot, CG
     return self;
 }
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
+- (void)setQuickOpen:(BOOL)o { _quickOpen = o; }
 
-- (void)setQuickOpen:(BOOL)o {
-    _quickOpen = o;
-    [_plus setImage:SF(o ? @"xmark" : @"plus", 22, UIImageSymbolWeightSemibold) forState:UIControlStateNormal];
-    _plus.backgroundColor = o ? UIColor.labelColor : Dyn(1, 1, 0.30, 1);
-    _plus.tintColor = o ? UIColor.systemBackgroundColor : UIColor.labelColor;
-}
 static NSString *ActSym(NSString *a) {
-    return @{@"scan": @"viewfinder", @"wxsettings": @"gearshape", @"settings": @"slider.horizontal.3", @"quick": @"square.grid.2x2", @"music": @"music.note.list", @"inbox": @"envelope", @"none": @"circle.dashed"}[a] ?: @"circle";
+    return @{@"scan": @"viewfinder", @"wxsettings": @"gearshape.fill", @"settings": @"slider.horizontal.3", @"quick": @"puzzlepiece.extension", @"music": @"music.note.list", @"inbox": @"envelope", @"none": @"circle.dashed"}[a] ?: @"circle";
 }
 - (void)prefs {
-    [_lb setImage:SF(ActSym(LTBStr(@"leftAct", @"scan")), 20, UIImageSymbolWeightRegular) forState:UIControlStateNormal];
-    [_rb setImage:SF(ActSym(LTBStr(@"rightAct", @"inbox")), 20, UIImageSymbolWeightRegular) forState:UIControlStateNormal];
+    [_lb setImage:SF(ActSym(LTBStr(@"leftAct", @"wxsettings")), 21, UIImageSymbolWeightRegular) forState:UIControlStateNormal];
+    [_rb setImage:SF(ActSym(LTBStr(@"rightAct", @"quick")), 21, UIImageSymbolWeightRegular) forState:UIControlStateNormal];
     [self setNeedsLayout];
 }
+- (void)updateColors {
+    UITraitCollection *tc = self.traitCollection; BOOL blur = !_blur.hidden;
+    _fill.fillColor = [(blur ? Dyn(1, 0.60, 0.10, 0.50) : Dyn(0.97, 0.93, 0.13, 0.93)) resolvedColorWithTraitCollection:tc].CGColor;
+    _rim.strokeColor = [Dyn(1.0, 0.95, 1.0, 0.25) resolvedColorWithTraitCollection:tc].CGColor;
+}
+- (void)traitCollectionDidChange:(UITraitCollection *)p { [super traitCollectionDidChange:p]; [self updateColors]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat W = self.bounds.size.width, H = self.bounds.size.height, safe = self.safeAreaInsets.bottom;
-    CGFloat mB = MAX(safe - 12, 8), tabH = 68, sH = 50, gap = 6, side = 20;
-    _tab.frame = CGRectMake(side, H - mB - tabH, W - 2 * side, tabH); _tab.radius = tabH / 2; _tab.bulge = 10;
-    _stripTop = H - mB - tabH - gap - sH - 6;
+    CGFloat mB = MAX(safe - 14, 10), tabRad = 27, tabDrop = 26, sRad = 23, sDrop = 8, bsz = 44, side = round(W * 0.05);
+    _tabR = CGRectMake(side, H - mB - (2 * tabRad + tabDrop), W - 2 * side, 2 * tabRad + tabDrop);
+    CGFloat sTop = _tabR.origin.y - 2 * sRad - 5; _stripTop = sTop;
     BOOL sl = LTBBool(@"showLeft", YES), sr = LTBBool(@"showRight", YES);
-    CGFloat x = side, w = W - 2 * side;
-    _left.hidden = !sl; _right.hidden = !sr;
-    if (sl) { _left.frame = CGRectMake(x, _stripTop, sH, sH); x += sH + 8; w -= sH + 8; }
-    if (sr) { _right.frame = CGRectMake(W - side - sH, _stripTop, sH, sH); w -= sH + 8; }
-    _left.radius = _right.radius = sH / 2; _left.bulge = _right.bulge = 5; _lb.frame = _left.bounds; _rb.frame = _right.bounds;
-    _strip.frame = CGRectMake(x, _stripTop, w, sH); _strip.radius = sH / 2; _strip.bulge = 7;
+    CGFloat bx = round(W * 0.043), x0 = sl ? bx + bsz + 10 : side, x1 = sr ? W - bx - bsz - 10 : W - side;
+    _stripR = CGRectMake(x0, sTop, x1 - x0, 2 * sRad + sDrop);
+    CGFloat by = sTop + sRad + 12;
+    CGRect lr = CGRectMake(bx, by, bsz, bsz), rr = CGRectMake(W - bx - bsz, by, bsz, bsz);
+    _lb.hidden = !sl; _rb.hidden = !sr; _lb.frame = lr; _rb.frame = rr;
 
-    NSUInteger n = _items.count, slots = n + 1, di = n / 2; CGFloat tw = _tab.bounds.size.width, sw = (tw - 24) / slots;
+    UIBezierPath *all = [UIBezierPath bezierPath];
+    [all appendPath:ArcCapsule(_tabR, tabRad, tabDrop)]; [all appendPath:ArcCapsule(_stripR, sRad, sDrop)];
+    if (sl) [all appendPath:[UIBezierPath bezierPathWithOvalInRect:lr]];
+    if (sr) [all appendPath:[UIBezierPath bezierPathWithOvalInRect:rr]];
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    _blur.frame = self.bounds; _mask.frame = self.bounds; _mask.path = all.CGPath;
+    _fill.frame = self.bounds; _fill.path = all.CGPath; _rim.frame = self.bounds; _rim.path = all.CGPath;
+    [CATransaction commit];
+    [self updateColors];
+
+    NSUInteger n = _items.count, slots = n + 1, di = n / 2; CGFloat ix0 = _tabR.origin.x + 24, sw = (_tabR.size.width - 48) / slots;
     for (NSUInteger i = 0; i < n; i++) {
-        NSUInteger slot = i < di ? i : i + 1; CGFloat cx = 12 + sw * (slot + 0.5), cy = tabH / 2 + ArcY(cx, tw, 7);
-        _items[i].frame = CGRectMake(0, 0, MIN(sw, 56), 50); _items[i].center = CGPointMake(cx, cy);
-        _badges[i].frame = CGRectMake(cx + 2, cy - 28, _badges[i].frame.size.width > 18 ? _badges[i].frame.size.width : 18, 18);
+        NSUInteger slot = i < di ? i : i + 1; CGFloat cx = ix0 + sw * (slot + 0.5), cy = CapCY(_tabR, tabRad, tabDrop, cx);
+        _items[i].bounds = CGRectMake(0, 0, MIN(sw, 56), 50); _items[i].center = CGPointMake(cx, cy);
+        CGFloat bw = MAX(15, _badges[i].frame.size.width); _badges[i].frame = CGRectMake(cx + 3, cy - 20, bw, 15);
     }
-    CGFloat pcx = 12 + sw * (di + 0.5); _plus.frame = CGRectMake(0, 0, 52, 52); _plus.center = CGPointMake(pcx, tabH / 2 + ArcY(pcx, tw, 7));
+    CGFloat dcx = ix0 + sw * (di + 0.5); _disc.bounds = CGRectMake(0, 0, 42, 42); _disc.center = CGPointMake(dcx, CapCY(_tabR, tabRad, tabDrop, dcx)); _disc.layer.cornerRadius = 21;
     [self placePill:NO];
 
     NSMutableArray *pages = [NSMutableArray array];
@@ -235,33 +283,37 @@ static NSString *ActSym(NSString *a) {
     if (LTBBool(@"showSearch", YES)) [pages addObject:_p1];
     if (!pages.count) [pages addObject:_p0];
     _p0.hidden = ![pages containsObject:_p0]; _p1.hidden = ![pages containsObject:_p1];
-    _sv.frame = _strip.bounds; _sv.contentSize = CGSizeMake(w * pages.count, sH);
-    for (NSUInteger i = 0; i < pages.count; i++) ((UIView *)pages[i]).frame = CGRectMake(w * i, 0, w, sH);
-    _pc.numberOfPages = pages.count; _pc.hidden = pages.count < 2; _pc.frame = CGRectMake(0, sH - 9, w, 8);
-    CGFloat tw2 = w - 58 - 116;
-    _art.frame = CGRectMake(10, 6, 38, 38); _art.layer.cornerRadius = 19;
-    _title.frame = CGRectMake(58, 7, tw2, 17); _artist.frame = CGRectMake(58, 24, tw2, 14);
-    _trk.frame = CGRectMake(58, 41, MIN(tw2, 120), 2); [self progress];
-    _prev.frame = CGRectMake(w - 116, 8, 34, 34); _play.frame = CGRectMake(w - 80, 8, 34, 34); _next.frame = CGRectMake(w - 44, 8, 34, 34);
-    _searchLbl.frame = CGRectMake(12, 0, w - 24, sH);
+    CGFloat w = _stripR.size.width - 16, h = 2 * sRad;
+    _sv.frame = CGRectMake(_stripR.origin.x + 8, _stripR.origin.y + 2, w, h); _sv.contentSize = CGSizeMake(w * pages.count, h);
+    for (NSUInteger i = 0; i < pages.count; i++) ((UIView *)pages[i]).frame = CGRectMake(w * i, 0, w, h);
+    _pc.numberOfPages = pages.count; _pc.hidden = pages.count < 2; _pc.frame = CGRectMake(_stripR.origin.x, CGRectGetMaxY(_stripR) - 14, _stripR.size.width - 8, 8); _pc.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
+    CGFloat tw2 = w - 54 - 128;
+    _art.frame = CGRectMake(4, 3, 40, 40); _art.layer.cornerRadius = 20;
+    _title.frame = CGRectMake(54, 5, tw2, 19); _artist.frame = CGRectMake(54, 24, tw2, 14);
+    _trk.frame = CGRectMake(54, 41, MIN(tw2, 130), 2); [self progress];
+    _prev.frame = CGRectMake(w - 124, 6, 36, 34); _play.frame = CGRectMake(w - 84, 6, 36, 34); _next.frame = CGRectMake(w - 44, 6, 36, 34);
+    _searchLbl.frame = CGRectMake(12, 0, w - 24, h);
 }
 - (void)placePill:(BOOL)anim {
     if (_sel < 0 || _sel >= (NSInteger)_items.count) return;
-    UIButton *b = _items[_sel]; CGFloat tw = _tab.bounds.size.width, sw = (tw - 24) / (_items.count + 1);
-    CGFloat pw = MIN(sw * 1.4, 100), ph = 50, x = b.center.x - pw / 2; x = MAX(8, MIN(x, tw - 8 - pw));
-    CGRect f = CGRectMake(x, b.center.y - ph / 2, pw, ph);
-    void (^set)(void) = ^{ self->_pill.frame = f; self->_pill.layer.cornerRadius = ph / 2; };
+    UIButton *b = _items[_sel]; CGFloat pw = _tabR.size.width * 0.225, ph = 46;
+    CGFloat cx = MAX(_tabR.origin.x + 6 + pw / 2, MIN(b.center.x, CGRectGetMaxX(_tabR) - 6 - pw / 2));
+    CGPoint c = CGPointMake(cx, CapCY(_tabR, 27, 26, cx)); CGFloat ang = CapAngle(_tabR, 27, 26, cx);
+    void (^set)(void) = ^{
+        self->_pill.transform = CGAffineTransformIdentity; self->_pill.bounds = CGRectMake(0, 0, pw, ph); self->_pill.center = c;
+        self->_pill.layer.cornerRadius = ph / 2; self->_pill.transform = CGAffineTransformMakeRotation(ang);
+    };
     if (anim) [UIView animateWithDuration:0.45 delay:0 usingSpringWithDamping:0.75 initialSpringVelocity:0.3 options:0 animations:set completion:nil]; else set();
 }
 - (void)syncSelection {
     NSInteger s = _tbc.selectedIndex; if (s == _sel) return;
-    _sel = s; [self placePill:_pill.frame.size.width > 0];
+    _sel = s; [self placePill:_pill.bounds.size.width > 0];
 }
 - (void)syncBadges {
     for (NSUInteger i = 0; i < _badges.count && i < _tbc.viewControllers.count; i++) {
         NSString *v = _tbc.viewControllers[i].tabBarItem.badgeValue ?: @""; if ([v isEqualToString:_badgeCache[i]]) continue;
         _badgeCache[i] = v; UILabel *l = _badges[i]; l.hidden = v.length == 0;
-        if (v.length) { l.text = v; CGFloat w = MAX(18, [v sizeWithAttributes:@{NSFontAttributeName: l.font}].width + 10); CGRect f = l.frame; f.size.width = w; f.size.height = 18; l.frame = f; }
+        if (v.length) { l.text = v; CGFloat w = MAX(15, [v sizeWithAttributes:@{NSFontAttributeName: l.font}].width + 8); CGRect f = l.frame; f.size = CGSizeMake(w, 15); l.frame = f; }
     }
 }
 - (void)tapItem:(UIButton *)b {
@@ -277,20 +329,21 @@ static NSString *ActSym(NSString *a) {
 - (void)refresh {
     LTBSong *s = LTBP.song;
     _title.text = s.name ?: @"未在播放"; _artist.text = s.artist ?: @"点击打开音乐面板";
-    if (!s.pic) { _art.image = SF(@"music.note", 18, UIImageSymbolWeightRegular); _art.tintColor = UIColor.labelColor; _art.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.25]; _art.contentMode = UIViewContentModeCenter; }
-    else LTBImage(s.pic, ^(UIImage *i) { if (LTBP.song == s && i) { self->_art.image = i; self->_art.contentMode = UIViewContentModeScaleAspectFill; } });
-    [_play setImage:SF(LTBP.playing ? @"pause.fill" : @"play.fill", 17, UIImageSymbolWeightSemibold) forState:UIControlStateNormal];
+    if (!s.pic) {
+        for (UIImageView *iv in @[_art, _disc]) { iv.image = SF(@"music.note", 18, UIImageSymbolWeightRegular); iv.tintColor = UIColor.whiteColor; iv.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1]; iv.contentMode = UIViewContentModeCenter; }
+    } else LTBImage(s.pic, ^(UIImage *i) { if (LTBP.song == s && i) { for (UIImageView *iv in @[self->_art, self->_disc]) { iv.image = i; iv.contentMode = UIViewContentModeScaleAspectFill; } } });
+    [_play setImage:SF(LTBP.playing ? @"pause.fill" : @"play.fill", 19, UIImageSymbolWeightSemibold) forState:UIControlStateNormal];
 }
 - (void)progress {
     CGFloat f = LTBP.duration > 0 ? LTBP.current / LTBP.duration : 0; _fil.frame = CGRectMake(0, 0, _trk.bounds.size.width * MIN(MAX(f, 0), 1), 2);
 }
 - (void)scrollViewDidScroll:(UIScrollView *)s { if (s.bounds.size.width > 0) _pc.currentPage = (NSInteger)lround(s.contentOffset.x / s.bounds.size.width); }
 - (void)doPrev { [LTBP prev]; } - (void)doNext { [LTBP next]; } - (void)doPlay { [LTBP toggle]; }
-- (void)tapPlus { [LTBMgr openQuick]; }
 - (void)tapMini { [LTBMgr openMusic:NO]; }
+- (void)longDisc:(UILongPressGestureRecognizer *)g { if (g.state == UIGestureRecognizerStateBegan) { [LTBP toggle]; [[UIImpactFeedbackGenerator new] impactOccurred]; } }
 - (void)tapSearch { [LTBMgr openMusic:YES]; }
-- (void)tapLeft { [LTBMgr runAction:LTBStr(@"leftAct", @"scan")]; }
-- (void)tapRight { [LTBMgr runAction:LTBStr(@"rightAct", @"inbox")]; }
+- (void)tapLeft { [LTBMgr runAction:LTBStr(@"leftAct", @"wxsettings")]; }
+- (void)tapRight { [LTBMgr runAction:LTBStr(@"rightAct", @"quick")]; }
 @end
 
 #pragma mark - panels
@@ -705,11 +758,11 @@ UIView *LTBEntryPill(void) { return [LTBEntry new]; }
     NSMutableArray *qk = [NSMutableArray array];
     for (NSDictionary *d in QuickItems()) [qk addObject:@{@"t": d[@"t"], @"k": [@"qk_" stringByAppendingString:d[@"id"]], @"y": @"sw"}];
     _data = @[
-        @{@"h": @"总开关", @"f": @"关闭后恢复微信原生底栏。", @"r": @[@{@"t": @"启用液态底栏", @"k": @"enabled", @"y": @"sw"}]},
+        @{@"h": @"总开关", @"f": @"关闭后恢复微信原生底栏。毛玻璃模糊关闭后更流畅，修改后需重启微信。", @"r": @[@{@"t": @"启用液态底栏", @"k": @"enabled", @"y": @"sw"}, @{@"t": @"毛玻璃模糊", @"k": @"blur", @"y": @"sw"}]},
         @{@"h": @"底栏上方按钮", @"r": @[
             @{@"t": @"显示左侧按钮", @"k": @"showLeft", @"y": @"sw"}, @{@"t": @"显示右侧按钮", @"k": @"showRight", @"y": @"sw"},
-            @{@"t": @"左侧按钮功能", @"k": @"leftAct", @"y": @"ch", @"d": @"scan", @"o": act},
-            @{@"t": @"右侧按钮功能", @"k": @"rightAct", @"y": @"ch", @"d": @"inbox", @"o": act}]},
+            @{@"t": @"左侧按钮功能", @"k": @"leftAct", @"y": @"ch", @"d": @"wxsettings", @"o": act},
+            @{@"t": @"右侧按钮功能", @"k": @"rightAct", @"y": @"ch", @"d": @"quick", @"o": act}]},
         @{@"h": @"中间条（左右滑动切换）", @"r": @[
             @{@"t": @"迷你播放器页", @"k": @"showMini", @"y": @"sw"}, @{@"t": @"搜索页", @"k": @"showSearch", @"y": @"sw"}]},
         @{@"h": @"音乐", @"f": @"QQ 音乐及网易云兜底走 Meting 兼容接口，可换成自己的地址。", @"r": @[
