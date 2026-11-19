@@ -59,7 +59,10 @@ void LTBImage(NSString *url, void (^cb)(UIImage *));
 - (void)openSettings;
 - (void)closePanels;
 - (void)runAction:(NSString *)a;
+- (void)start;
 @end
+
+UIView *LTBEntryPill(void);
 
 #define LTBP [LTBPlayer shared]
 #define LTBMgr [LTBManager shared]

@@ -30,38 +30,56 @@ static NSArray *QuickItems(void) {
         @{@"id": @"stickers", @"t": @"表情", @"s": @"face.smiling", @"u": @"weixin://dl/stickers"},
         @{@"id": @"shop", @"t": @"购物", @"s": @"bag", @"u": @"weixin://dl/shopping"},
         @{@"id": @"fav", @"t": @"收藏", @"s": @"archivebox", @"u": @"weixin://dl/favorites"},
-        @{@"id": @"wxset", @"t": @"微信设置", @"s": @"gearshape", @"u": @"weixin://dl/settings"},
+        @{@"id": @"wxset", @"t": @"微信设置", @"s": @"gearshape", @"a": @"wxsettings"},
         @{@"id": @"ltbset", @"t": @"底栏设置", @"s": @"slider.horizontal.3", @"a": @"settings"},
         @{@"id": @"music", @"t": @"音乐", @"s": @"music.note.list", @"a": @"music"},
     ];
 }
 
-#pragma mark - glass
+#pragma mark - glass (curved "pillow" shape)
+static UIBezierPath *Pillow(CGRect r, CGFloat cr, CGFloat b) {
+    CGFloat l = r.origin.x + b, t = r.origin.y + b, rr = CGRectGetMaxX(r) - b, bt = CGRectGetMaxY(r) - b, mx = CGRectGetMidX(r), my = CGRectGetMidY(r);
+    cr = MAX(1, MIN(cr, MIN(rr - l, bt - t) / 2));
+    BOOL side = (bt - t - 2 * cr) > 1;
+    UIBezierPath *p = [UIBezierPath bezierPath];
+    [p moveToPoint:CGPointMake(l + cr, t)];
+    [p addQuadCurveToPoint:CGPointMake(rr - cr, t) controlPoint:CGPointMake(mx, t - 2 * b)];
+    [p addQuadCurveToPoint:CGPointMake(rr, t + cr) controlPoint:CGPointMake(rr, t)];
+    if (side) [p addQuadCurveToPoint:CGPointMake(rr, bt - cr) controlPoint:CGPointMake(rr + 2 * b, my)];
+    [p addQuadCurveToPoint:CGPointMake(rr - cr, bt) controlPoint:CGPointMake(rr, bt)];
+    [p addQuadCurveToPoint:CGPointMake(l + cr, bt) controlPoint:CGPointMake(mx, bt + 2 * b)];
+    [p addQuadCurveToPoint:CGPointMake(l, bt - cr) controlPoint:CGPointMake(l, bt)];
+    if (side) [p addQuadCurveToPoint:CGPointMake(l, t + cr) controlPoint:CGPointMake(l - 2 * b, my)];
+    [p addQuadCurveToPoint:CGPointMake(l + cr, t) controlPoint:CGPointMake(l, t)];
+    [p closePath];
+    return p;
+}
+
 @interface LTBGlass : UIVisualEffectView
+@property(nonatomic) CGFloat radius, bulge;
 @end
-@implementation LTBGlass
+@implementation LTBGlass {
+    CAShapeLayer *_mask, *_rim; CAGradientLayer *_hl;
+}
 - (instancetype)init {
-    UIVisualEffect *e = nil;
-    Class g = NSClassFromString(@"UIGlassEffect"); // iOS 26 Liquid Glass
-    if (g) { e = [[g alloc] init]; @try { [(NSObject *)e setValue:@YES forKey:@"interactive"]; } @catch (NSException *x) {} }
-    BOOL native = e != nil;
-    if (!e) e = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
-    self = [super initWithEffect:e];
+    self = [super initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
     if (self) {
-        self.layer.cornerCurve = kCACornerCurveContinuous; self.clipsToBounds = YES;
-        if (!native) { // fallback: fake rim light + specular gradient
-            self.layer.borderWidth = 0.8; self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.35].CGColor;
-            CAGradientLayer *gl = [CAGradientLayer layer]; gl.name = @"hl";
-            gl.colors = @[(id)[UIColor colorWithWhite:1 alpha:0.28].CGColor, (id)[UIColor colorWithWhite:1 alpha:0.0].CGColor, (id)[UIColor colorWithWhite:1 alpha:0.10].CGColor];
-            gl.startPoint = CGPointMake(0, 0); gl.endPoint = CGPointMake(1, 1);
-            [self.contentView.layer insertSublayer:gl atIndex:0];
-        }
+        _radius = 24; _bulge = 0;
+        _hl = [CAGradientLayer layer];
+        _hl.colors = @[(id)[UIColor colorWithWhite:1 alpha:0.35].CGColor, (id)[UIColor colorWithWhite:1 alpha:0.02].CGColor, (id)[UIColor colorWithWhite:1 alpha:0.14].CGColor];
+        _hl.startPoint = CGPointMake(0.1, 0); _hl.endPoint = CGPointMake(0.9, 1);
+        [self.contentView.layer insertSublayer:_hl atIndex:0];
+        _rim = [CAShapeLayer layer]; _rim.fillColor = nil; _rim.lineWidth = 1.4; _rim.strokeColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
+        [self.contentView.layer addSublayer:_rim];
+        _mask = [CAShapeLayer layer]; self.layer.mask = _mask;
     }
     return self;
 }
 - (void)layoutSubviews {
     [super layoutSubviews];
-    for (CALayer *l in self.contentView.layer.sublayers) if ([l.name isEqualToString:@"hl"]) l.frame = self.contentView.bounds;
+    CGRect b = self.bounds; if (b.size.width < 2) return;
+    UIBezierPath *p = Pillow(b, _radius, _bulge);
+    _mask.frame = b; _mask.path = p.CGPath; _rim.frame = b; _rim.path = p.CGPath; _hl.frame = self.contentView.bounds;
 }
 @end
 
@@ -150,25 +168,25 @@ static NSArray *QuickItems(void) {
 }
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 
-static NSString *ActSym(NSString *a) { return @{@"settings": @"gearshape.fill", @"quick": @"square.grid.2x2.fill", @"music": @"music.note.list", @"none": @"circle.dashed"}[a] ?: @"circle"; }
+static NSString *ActSym(NSString *a) { return @{@"wxsettings": @"gearshape.fill", @"settings": @"slider.horizontal.3", @"quick": @"square.grid.2x2.fill", @"music": @"music.note.list", @"none": @"circle.dashed"}[a] ?: @"circle"; }
 - (void)prefs {
-    [_lb setImage:SF(ActSym(LTBStr(@"leftAct", @"settings")), 18, UIImageSymbolWeightSemibold) forState:UIControlStateNormal];
+    [_lb setImage:SF(ActSym(LTBStr(@"leftAct", @"wxsettings")), 18, UIImageSymbolWeightSemibold) forState:UIControlStateNormal];
     [_rb setImage:SF(ActSym(LTBStr(@"rightAct", @"quick")), 18, UIImageSymbolWeightSemibold) forState:UIControlStateNormal];
     [self setNeedsLayout];
 }
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat W = self.bounds.size.width, H = self.bounds.size.height, safe = self.safeAreaInsets.bottom;
-    CGFloat mB = MAX(safe - 12, 8), tabH = 62, sH = 50, gap = 8, side = 14;
-    _tab.frame = CGRectMake(side, H - mB - tabH, W - 2 * side, tabH); _tab.layer.cornerRadius = tabH / 2;
+    CGFloat mB = MAX(safe - 12, 8), tabH = 66, sH = 50, gap = 8, side = 14;
+    _tab.frame = CGRectMake(side, H - mB - tabH, W - 2 * side, tabH); _tab.radius = tabH / 2; _tab.bulge = 7;
     _stripTop = H - mB - tabH - gap - sH;
     BOOL sl = LTBBool(@"showLeft", YES), sr = LTBBool(@"showRight", YES);
     CGFloat x = side, w = W - 2 * side;
     _left.hidden = !sl; _right.hidden = !sr;
     if (sl) { _left.frame = CGRectMake(x, _stripTop, sH, sH); x += sH + 8; w -= sH + 8; }
     if (sr) { _right.frame = CGRectMake(W - side - sH, _stripTop, sH, sH); w -= sH + 8; }
-    _left.layer.cornerRadius = _right.layer.cornerRadius = sH / 2; _lb.frame = _left.bounds; _rb.frame = _right.bounds;
-    _strip.frame = CGRectMake(x, _stripTop, w, sH); _strip.layer.cornerRadius = sH / 2;
+    _left.radius = _right.radius = sH / 2; _left.bulge = _right.bulge = 4; _lb.frame = _left.bounds; _rb.frame = _right.bounds;
+    _strip.frame = CGRectMake(x, _stripTop, w, sH); _strip.radius = sH / 2; _strip.bulge = 5;
 
     NSUInteger n = _items.count, slots = n + 1, di = n / 2;
     CGFloat sw = (_tab.bounds.size.width - 16) / slots;
@@ -196,7 +214,7 @@ static NSString *ActSym(NSString *a) { return @{@"settings": @"gearshape.fill", 
 - (void)placePill:(BOOL)anim {
     if (_sel < 0 || _sel >= (NSInteger)_items.count) return;
     UIButton *b = _items[_sel]; CGFloat sw = (_tab.bounds.size.width - 16) / (_items.count + 1);
-    CGRect f = CGRectMake(0, 0, sw - 4, 50); f.origin.x = b.center.x - f.size.width / 2; f.origin.y = 6;
+    CGRect f = CGRectMake(0, 0, sw - 4, 50); f.origin.x = b.center.x - f.size.width / 2; f.origin.y = 8;
     void (^set)(void) = ^{ self->_pill.frame = f; self->_pill.layer.cornerRadius = 25; };
     if (anim) [UIView animateWithDuration:0.55 delay:0 usingSpringWithDamping:0.7 initialSpringVelocity:0.4 options:0 animations:set completion:nil]; else set();
 }
@@ -237,7 +255,7 @@ static NSString *ActSym(NSString *a) { return @{@"settings": @"gearshape.fill", 
 - (void)tapDisc { [LTBMgr openMusic:NO]; }
 - (void)longDisc:(UILongPressGestureRecognizer *)g { if (g.state == UIGestureRecognizerStateBegan) { [LTBP toggle]; [[UIImpactFeedbackGenerator new] impactOccurred]; } }
 - (void)tapSearch { [LTBMgr openMusic:YES]; }
-- (void)tapLeft { [LTBMgr runAction:LTBStr(@"leftAct", @"settings")]; }
+- (void)tapLeft { [LTBMgr runAction:LTBStr(@"leftAct", @"wxsettings")]; }
 - (void)tapRight { [LTBMgr runAction:LTBStr(@"rightAct", @"quick")]; }
 @end
 
@@ -259,7 +277,7 @@ static NSString *ActSym(NSString *a) { return @{@"settings": @"gearshape.fill", 
 }
 - (instancetype)init {
     if (!(self = [super init])) return nil;
-    self.layer.cornerRadius = 34; UIView *c = self.contentView;
+    self.radius = 38; self.bulge = 12; UIView *c = self.contentView;
     _art = [UIImageView new]; _art.contentMode = UIViewContentModeScaleAspectFill; _art.clipsToBounds = YES; _art.layer.cornerRadius = 28; _art.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.3];
     _title = [UILabel new]; _title.font = [UIFont boldSystemFontOfSize:19]; _artist = [UILabel new]; _artist.font = [UIFont systemFontOfSize:14]; _artist.textColor = UIColor.secondaryLabelColor;
     _lyric = [UILabel new]; _lyric.font = [UIFont systemFontOfSize:12]; _lyric.textColor = UIColor.tertiaryLabelColor;
@@ -286,15 +304,15 @@ static NSString *ActSym(NSString *a) { return @{@"settings": @"gearshape.fill", 
 - (void)willShow { [self sync]; [_tv reloadData]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGFloat W = self.bounds.size.width, p = 18;
-    _art.frame = CGRectMake(p, 16, 56, 56);
-    _title.frame = CGRectMake(p + 68, 16, W - p - 68 - 150, 24); _artist.frame = CGRectMake(p + 68, 40, W - p - 68 - 150, 18); _lyric.frame = CGRectMake(p + 68, 58, W - p - 68 - 150, 16);
-    _prev.frame = CGRectMake(W - 150, 16, 36, 56); _play.frame = CGRectMake(W - 112, 16, 56, 56); _next.frame = CGRectMake(W - 52, 16, 36, 56);
-    _prog.frame = CGRectMake(p, 80, W - 2 * p, 14);
-    _field.frame = CGRectMake(p, 102, W - 2 * p, 40); _go.frame = CGRectMake(W - p - 64, 102, 64, 40);
-    _seg.frame = CGRectMake(p, 150, W - 2 * p, 32);
-    _mode.frame = CGRectMake(p, 188, 130, 30); _mode.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft; _trash.frame = CGRectMake(W - p - 36, 188, 36, 30);
-    _tv.frame = CGRectMake(0, 222, W, self.bounds.size.height - 222 - 14);
+    CGFloat W = self.bounds.size.width, p = 28, d = 16, tw = W - p - 68 - 160;
+    _art.frame = CGRectMake(p, 14 + d, 56, 56);
+    _title.frame = CGRectMake(p + 68, 14 + d, tw, 24); _artist.frame = CGRectMake(p + 68, 38 + d, tw, 18); _lyric.frame = CGRectMake(p + 68, 56 + d, tw, 16);
+    _prev.frame = CGRectMake(W - 160, 14 + d, 36, 56); _play.frame = CGRectMake(W - 122, 14 + d, 56, 56); _next.frame = CGRectMake(W - 62, 14 + d, 36, 56);
+    _prog.frame = CGRectMake(p, 78 + d, W - 2 * p, 14);
+    _field.frame = CGRectMake(p, 100 + d, W - 2 * p, 40); _go.frame = CGRectMake(W - p - 64, 100 + d, 64, 40);
+    _seg.frame = CGRectMake(p, 148 + d, W - 2 * p, 32);
+    _mode.frame = CGRectMake(p, 186 + d, 130, 30); _mode.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft; _trash.frame = CGRectMake(W - p - 36, 186 + d, 36, 30);
+    _tv.frame = CGRectMake(16, 220 + d, W - 32, self.bounds.size.height - 220 - d - 30);
 }
 - (void)sync {
     LTBSong *s = LTBP.song; _title.text = s.name ?: @"未在播放"; _artist.text = s.artist ?: @"搜索歌曲或选择歌单";
@@ -392,7 +410,7 @@ static NSString *ActSym(NSString *a) { return @{@"settings": @"gearshape.fill", 
 }
 - (instancetype)init {
     if (!(self = [super init])) return nil;
-    self.layer.cornerRadius = 34; _btns = [NSMutableArray array];
+    self.radius = 38; self.bulge = 12; _btns = [NSMutableArray array];
     _h = [UILabel new]; _h.text = @"快捷面板"; _h.font = [UIFont boldSystemFontOfSize:19]; [self.contentView addSubview:_h];
     return self;
 }
@@ -409,11 +427,11 @@ static NSString *ActSym(NSString *a) { return @{@"settings": @"gearshape.fill", 
     }
     [self setNeedsLayout];
 }
-- (CGFloat)neededHeight { return 70 + ceil(_btns.count / 4.0) * 84 + 10; }
+- (CGFloat)neededHeight { return 90 + ceil(_btns.count / 4.0) * 84 + 30; }
 - (void)layoutSubviews {
-    [super layoutSubviews]; CGFloat W = self.bounds.size.width, p = 14, cw = (W - 2 * p) / 4;
-    _h.frame = CGRectMake(22, 18, W - 44, 28);
-    for (NSUInteger i = 0; i < _btns.count; i++) _btns[i].frame = CGRectMake(p + cw * (i % 4), 62 + 84 * (i / 4), cw, 78);
+    [super layoutSubviews]; CGFloat W = self.bounds.size.width, p = 22, cw = (W - 2 * p) / 4;
+    _h.frame = CGRectMake(32, 32, W - 64, 28);
+    for (NSUInteger i = 0; i < _btns.count; i++) _btns[i].frame = CGRectMake(p + cw * (i % 4), 80 + 84 * (i / 4), cw, 78);
 }
 - (void)tap:(UIButton *)b {
     for (NSDictionary *d in QuickItems()) if ([d[@"id"] isEqual:b.accessibilityIdentifier]) {
@@ -425,8 +443,9 @@ static NSString *ActSym(NSString *a) { return @{@"settings": @"gearshape.fill", 
 @end
 
 #pragma mark - manager
+static BOOL Eligible(UITabBarController *t);
 @implementation LTBManager {
-    __weak UITabBarController *_tbc; LTBHost *_host; LTBBar *_bar; LTBPanel *_panel; UIControl *_dim; NSTimer *_timer; BOOL _shown;
+    __weak UITabBarController *_tbc; LTBHost *_host; LTBBar *_bar; LTBPanel *_panel; UIControl *_dim; NSTimer *_timer, *_scan; BOOL _shown;
 }
 + (instancetype)shared { static LTBManager *m; static dispatch_once_t o; dispatch_once(&o, ^{ m = [LTBManager new]; }); return m; }
 
@@ -434,10 +453,40 @@ static BOOL Eligible(UITabBarController *t) {
     NSUInteger n = t.viewControllers.count; if (n < 3 || n > 5 || !t.view.window) return NO;
     return [NSStringFromClass(t.class) containsString:@"MMTabBar"] || t.view.window.rootViewController == t;
 }
+static UITabBarController *FindTBC(UIViewController *v, int d) {
+    if (!v || d > 8) return nil;
+    if ([v isKindOfClass:[UITabBarController class]] && Eligible((UITabBarController *)v)) return (UITabBarController *)v;
+    for (UIViewController *c in v.childViewControllers) { UITabBarController *r = FindTBC(c, d + 1); if (r) return r; }
+    return FindTBC(v.presentedViewController, d + 1);
+}
+static UIWindow *KeyWin(void) {
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+        if (![s isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow) return w;
+    }
+    return [UIApplication sharedApplication].keyWindow;
+}
+static UIViewController *TopVC(void) { UIViewController *t = KeyWin().rootViewController; while (t.presentedViewController) t = t.presentedViewController; return t; }
+
+// Independent of any hook: poll for the main tab controller so we keep working even if other tweaks change the hook path
+- (void)start {
+    if (_scan) return;
+    _scan = [NSTimer scheduledTimerWithTimeInterval:0.6 repeats:YES block:^(NSTimer *t) { [self discover]; }];
+}
+- (void)discover {
+    if (!LTBBool(@"enabled", YES)) return;
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+        if (![s isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in ((UIWindowScene *)s).windows) {
+            UITabBarController *t = FindTBC(w.rootViewController, 0);
+            if (t && (t != _tbc || _host.superview != t.view)) { [self attach:t]; return; }
+        }
+    }
+}
 - (void)attach:(UITabBarController *)t {
     if (!Eligible(t)) return;
     if (!LTBBool(@"enabled", YES)) { [self detach]; return; }
-    CGFloat safe = t.view.safeAreaInsets.bottom, H = t.view.bounds.size.height, W = t.view.bounds.size.width, bh = 128 + safe;
+    CGFloat safe = t.view.safeAreaInsets.bottom, H = t.view.bounds.size.height, W = t.view.bounds.size.width, bh = 140 + safe;
     if (_tbc == t && _host.superview == t.view) {
         _host.frame = t.view.bounds; _bar.frame = CGRectMake(0, H - bh, W, bh); t.tabBar.alpha = 0;
         if (t.view.subviews.lastObject != _host) [t.view bringSubviewToFront:_host];
@@ -462,9 +511,11 @@ static BOOL Eligible(UITabBarController *t) {
 - (void)sync { [_bar syncSelection]; }
 - (BOOL)shouldShow {
     UITabBarController *t = _tbc; if (!t) return NO;
-    if (CGRectGetMinY(t.tabBar.frame) >= CGRectGetHeight(t.view.bounds) - 1) return NO;
     UIViewController *s = t.selectedViewController;
-    if ([s isKindOfClass:[UINavigationController class]] && ((UINavigationController *)s).topViewController.hidesBottomBarWhenPushed) return NO;
+    if ([s isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *n = (UINavigationController *)s;
+        if (n.viewControllers.count > 1 && (n.topViewController.hidesBottomBarWhenPushed || t.tabBar.hidden)) return NO;
+    }
     return YES;
 }
 - (void)tick {
@@ -477,17 +528,30 @@ static BOOL Eligible(UITabBarController *t) {
     }
 }
 - (void)runAction:(NSString *)a {
-    if ([a isEqual:@"settings"]) [self openSettings]; else if ([a isEqual:@"quick"]) [self openQuick]; else if ([a isEqual:@"music"]) [self openMusic:NO];
+    if ([a isEqual:@"wxsettings"]) [self openWeChatSettings]; else if ([a isEqual:@"settings"]) [self openSettings]; else if ([a isEqual:@"quick"]) [self openQuick]; else if ([a isEqual:@"music"]) [self openMusic:NO];
 }
 - (void)openSettings {
-    [self closePanels]; UITabBarController *t = _tbc; if (!t) return;
-    UINavigationController *n = [[UINavigationController alloc] initWithRootViewController:[LTBSettingsVC new]];
-    UIViewController *top = t; while (top.presentedViewController) top = top.presentedViewController;
-    [top presentViewController:n animated:YES completion:nil];
+    [self closePanels];
+    UIViewController *top = TopVC(); if (!top) return;
+    if ([top isKindOfClass:[UINavigationController class]] && [((UINavigationController *)top).viewControllers.firstObject isKindOfClass:[LTBSettingsVC class]]) return;
+    [top presentViewController:[[UINavigationController alloc] initWithRootViewController:[LTBSettingsVC new]] animated:YES completion:nil];
+}
+- (void)openWeChatSettings {
+    [self closePanels];
+    UITabBarController *t = _tbc; Class c = NSClassFromString(@"NewSettingViewController");
+    if (t && c) {
+        @try {
+            NSUInteger last = t.viewControllers.count - 1;
+            t.selectedIndex = last;
+            UINavigationController *n = [t.viewControllers[last] isKindOfClass:[UINavigationController class]] ? (UINavigationController *)t.viewControllers[last] : nil;
+            if (n) { [n popToRootViewControllerAnimated:NO]; UIViewController *vc = [[c alloc] init]; [n pushViewController:vc animated:YES]; return; }
+        } @catch (NSException *e) {}
+    }
+    [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"weixin://dl/settings"] options:@{} completionHandler:nil];
 }
 - (void)openMusic:(BOOL)focus {
     if ([_panel isKindOfClass:[LTBMusicPanel class]]) { if (focus) [(LTBMusicPanel *)_panel focusSearch]; else [self closePanels]; return; }
-    LTBMusicPanel *p = [LTBMusicPanel new]; p.hingeLeft = YES; [self show:p height:520];
+    LTBMusicPanel *p = [LTBMusicPanel new]; p.hingeLeft = YES; [self show:p height:560];
     if (focus) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [p focusSearch]; });
 }
 - (void)openQuick {
@@ -522,6 +586,22 @@ static BOOL Eligible(UITabBarController *t) {
 }
 @end
 
+#pragma mark - entry pill (injected into other plugins' settings pages)
+@interface LTBEntry : LTBGlass
+@end
+@implementation LTBEntry { UILabel *_l; }
+- (instancetype)init {
+    if (!(self = [super init])) return nil;
+    self.radius = 19; self.bulge = 3; self.tag = 0x4C5442;
+    _l = [UILabel new]; _l.text = @"⚙︎ 液态底栏"; _l.font = [UIFont boldSystemFontOfSize:14]; _l.textAlignment = NSTextAlignmentCenter; _l.textColor = UIColor.labelColor;
+    [self.contentView addSubview:_l];
+    [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:[LTBManager shared] action:@selector(openSettings)]];
+    return self;
+}
+- (void)layoutSubviews { [super layoutSubviews]; _l.frame = self.contentView.bounds; }
+@end
+UIView *LTBEntryPill(void) { return [LTBEntry new]; }
+
 #pragma mark - settings
 @implementation LTBSettingsVC { NSArray *_data; }
 - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
@@ -534,14 +614,14 @@ static BOOL Eligible(UITabBarController *t) {
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
 - (void)build {
     NSArray *src = @[@[@"netease", @"网易云"], @[@"qq", @"QQ音乐"]];
-    NSArray *act = @[@[@"settings", @"插件设置"], @[@"quick", @"快捷面板"], @[@"music", @"音乐面板"], @[@"none", @"无操作"]];
+    NSArray *act = @[@[@"wxsettings", @"微信设置"], @[@"settings", @"插件设置"], @[@"quick", @"快捷面板"], @[@"music", @"音乐面板"], @[@"none", @"无操作"]];
     NSMutableArray *qk = [NSMutableArray array];
     for (NSDictionary *d in QuickItems()) [qk addObject:@{@"t": d[@"t"], @"k": [@"qk_" stringByAppendingString:d[@"id"]], @"y": @"sw"}];
     _data = @[
         @{@"h": @"总开关", @"f": @"关闭后恢复微信原生底栏。", @"r": @[@{@"t": @"启用液态底栏", @"k": @"enabled", @"y": @"sw"}]},
         @{@"h": @"底栏上方按钮", @"r": @[
             @{@"t": @"显示左侧按钮", @"k": @"showLeft", @"y": @"sw"}, @{@"t": @"显示右侧按钮", @"k": @"showRight", @"y": @"sw"},
-            @{@"t": @"左侧按钮功能", @"k": @"leftAct", @"y": @"ch", @"d": @"settings", @"o": act},
+            @{@"t": @"左侧按钮功能", @"k": @"leftAct", @"y": @"ch", @"d": @"wxsettings", @"o": act},
             @{@"t": @"右侧按钮功能", @"k": @"rightAct", @"y": @"ch", @"d": @"quick", @"o": act}]},
         @{@"h": @"中间条（左右滑动切换）", @"r": @[
             @{@"t": @"迷你播放器页", @"k": @"showMini", @"y": @"sw"}, @{@"t": @"搜索页", @"k": @"showSearch", @"y": @"sw"}]},

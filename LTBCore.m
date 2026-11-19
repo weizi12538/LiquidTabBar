@@ -51,6 +51,8 @@ static NSString *Enc(NSString *s) {
     if (!cs) cs = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"];
     return [s stringByAddingPercentEncodingWithAllowedCharacters:cs] ?: @"";
 }
+static NSDictionary *DD(id o) { return [o isKindOfClass:[NSDictionary class]] ? o : nil; }
+static NSArray *AA(id o) { return [o isKindOfClass:[NSArray class]] ? o : nil; }
 static NSString *Str(id o) { return o && o != [NSNull null] ? [NSString stringWithFormat:@"%@", o] : nil; }
 
 #pragma mark - songs / TM
@@ -78,9 +80,9 @@ static NSArray *ParseMeting(id j, NSString *src) {
 static LTBSong *NSong(NSDictionary *t) {
     LTBSong *s = [LTBSong new]; s.source = @"netease"; s.sid = Str(t[@"id"]); s.name = Str(t[@"name"]);
     NSMutableArray *n = [NSMutableArray array];
-    for (NSDictionary *x in (t[@"artists"] ?: t[@"ar"])) if (x[@"name"]) [n addObject:x[@"name"]];
+    for (id x in AA(t[@"artists"] ?: t[@"ar"])) if (DD(x)[@"name"]) [n addObject:Str(DD(x)[@"name"])];
     s.artist = [n componentsJoinedByString:@"/"];
-    NSDictionary *al = t[@"album"] ?: t[@"al"]; s.pic = Str(al[@"picUrl"]);
+    NSDictionary *al = DD(t[@"album"] ?: t[@"al"]); s.pic = Str(al[@"picUrl"]);
     s.url = [TM getSongUrl:s.sid source:@"netease"];
     return s;
 }
@@ -96,9 +98,9 @@ static LTBSong *NSong(NSDictionary *t) {
     };
     if ([src isEqualToString:@"qq"]) { viaMeting(); return; }
     FetchJSON([NSString stringWithFormat:@"https://music.163.com/api/playlist/detail?id=%@", pid], ^(id j) {
-        NSArray *tr = [j isKindOfClass:[NSDictionary class]] ? j[@"result"][@"tracks"] : nil;
+        NSArray *tr = AA(DD(DD(j)[@"result"])[@"tracks"]);
         NSMutableArray *a = [NSMutableArray array];
-        for (NSDictionary *t in tr) [a addObject:NSong(t)];
+        for (id t in tr) if (DD(t)) [a addObject:NSong(t)];
         if (a.count) cb(a); else viaMeting();
     });
 }
@@ -108,7 +110,7 @@ static LTBSong *NSong(NSDictionary *t) {
         return;
     }
     FetchJSON([NSString stringWithFormat:@"https://music.163.com/api/song/detail?ids=[%@]", sid], ^(id j) {
-        NSDictionary *t = [j isKindOfClass:[NSDictionary class]] ? [j[@"songs"] firstObject] : nil;
+        NSDictionary *t = DD(AA(DD(j)[@"songs"]).firstObject);
         cb(t ? NSong(t) : nil);
     });
 }
@@ -118,7 +120,7 @@ static LTBSong *NSong(NSDictionary *t) {
         return;
     }
     FetchJSON([NSString stringWithFormat:@"https://music.163.com/api/song/lyric?id=%@&lv=1", sid], ^(id j) {
-        cb([j isKindOfClass:[NSDictionary class]] ? Str(j[@"lrc"][@"lyric"]) : nil);
+        cb(Str(DD(DD(j)[@"lrc"])[@"lyric"]));
     });
 }
 + (void)search:(NSString *)kw source:(NSString *)src completion:(void (^)(NSArray<LTBSong *> *))cb {
@@ -127,16 +129,17 @@ static LTBSong *NSong(NSDictionary *t) {
         return;
     }
     FetchJSON([NSString stringWithFormat:@"https://music.163.com/api/search/get/web?csrf_token=&s=%@&type=1&offset=0&limit=30", Enc(kw)], ^(id j) {
-        NSArray *ss = [j isKindOfClass:[NSDictionary class]] ? j[@"result"][@"songs"] : nil;
+        NSArray *ss = AA(DD(DD(j)[@"result"])[@"songs"]);
         NSMutableArray *a = [NSMutableArray array], *ids = [NSMutableArray array];
-        for (NSDictionary *t in ss) { LTBSong *s = NSong(t); [a addObject:s]; [ids addObject:s.sid]; }
+        for (id t in ss) { if (!DD(t)) continue; LTBSong *s = NSong(t); if (!s.sid) continue; [a addObject:s]; [ids addObject:s.sid]; }
         if (!a.count) { cb(a); return; }
         // fetch covers
         NSString *u = [NSString stringWithFormat:@"https://music.163.com/api/song/detail?ids=[%@]", [ids componentsJoinedByString:@","]];
         FetchJSON(u, ^(id d) {
             NSMutableDictionary *pics = [NSMutableDictionary dictionary];
-            for (NSDictionary *t in ([d isKindOfClass:[NSDictionary class]] ? d[@"songs"] : nil)) {
-                NSString *p = Str(t[@"album"][@"picUrl"]); if (p) pics[Str(t[@"id"])] = p;
+            for (id t in AA(DD(d)[@"songs"])) {
+                if (!DD(t)) continue;
+                NSString *p = Str(DD(DD(t)[@"album"])[@"picUrl"]); if (p) pics[Str(DD(t)[@"id"])] = p;
             }
             for (LTBSong *s in a) s.pic = pics[s.sid];
             cb(a);
@@ -165,13 +168,14 @@ static LTBSong *NSong(NSDictionary *t) {
     }];
     MPRemoteCommandCenter *rc = [MPRemoteCommandCenter sharedCommandCenter];
     __weak typeof(self) w = self;
-    [rc.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { if (!w.playing) [w toggle]; return MPRemoteCommandHandlerStatusSuccess; }];
-    [rc.pauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { if (w.playing) [w toggle]; return MPRemoteCommandHandlerStatusSuccess; }];
-    [rc.togglePlayPauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { [w toggle]; return MPRemoteCommandHandlerStatusSuccess; }];
-    [rc.nextTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { [w next]; return MPRemoteCommandHandlerStatusSuccess; }];
-    [rc.previousTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { [w prev]; return MPRemoteCommandHandlerStatusSuccess; }];
+    [rc.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { dispatch_async(dispatch_get_main_queue(), ^{ if (!w.playing) [w toggle]; }); return MPRemoteCommandHandlerStatusSuccess; }];
+    [rc.pauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { dispatch_async(dispatch_get_main_queue(), ^{ if (w.playing) [w toggle]; }); return MPRemoteCommandHandlerStatusSuccess; }];
+    [rc.togglePlayPauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { dispatch_async(dispatch_get_main_queue(), ^{ [w toggle]; }); return MPRemoteCommandHandlerStatusSuccess; }];
+    [rc.nextTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { dispatch_async(dispatch_get_main_queue(), ^{ [w next]; }); return MPRemoteCommandHandlerStatusSuccess; }];
+    [rc.previousTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { dispatch_async(dispatch_get_main_queue(), ^{ [w prev]; }); return MPRemoteCommandHandlerStatusSuccess; }];
     [rc.changePlaybackPositionCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) {
-        if (w.duration > 0) [w seek:((MPChangePlaybackPositionCommandEvent *)e).positionTime / w.duration];
+        double pos = ((MPChangePlaybackPositionCommandEvent *)e).positionTime;
+        dispatch_async(dispatch_get_main_queue(), ^{ if (w.duration > 0) [w seek:pos / w.duration]; });
         return MPRemoteCommandHandlerStatusSuccess; }];
 }
 
@@ -188,8 +192,8 @@ static LTBSong *NSong(NSDictionary *t) {
     if (i < 0 || i >= (NSInteger)_songs.count) return;
     _index = i; LTBSong *s = _songs[i];
     NSURL *u = [NSURL URLWithString:s.url ?: @""]; if (!u) { [self next]; return; }
-    AVAudioSession *as = [AVAudioSession sharedInstance];
-    [as setCategory:AVAudioSessionCategoryPlayback error:nil]; [as setActive:YES error:nil];
+    @try { AVAudioSession *as = [AVAudioSession sharedInstance];
+    [as setCategory:AVAudioSessionCategoryPlayback error:nil]; [as setActive:YES error:nil]; } @catch (NSException *e) {}
     if (_item) {
         @try { [_item removeObserver:self forKeyPath:@"status"]; } @catch (NSException *e) {}
         [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:_item];
@@ -208,7 +212,9 @@ static LTBSong *NSong(NSDictionary *t) {
     else if (s.lrc.length) Fetch(s.lrc, ^(NSData *d) { got(d ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : nil); });
 }
 - (void)ended:(NSNotification *)n {
-    if (_mode == 1) { [_p seekToTime:kCMTimeZero]; [_p play]; } else [self next];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_mode == 1) { [self->_p seekToTime:kCMTimeZero]; [self->_p play]; } else [self next];
+    });
 }
 - (void)toggle {
     if (!_item) { if (_songs.count) [self playIndex:MAX(_index, 0)]; return; }
@@ -236,6 +242,10 @@ static LTBSong *NSong(NSDictionary *t) {
 - (NSString *)modeTitle { return @[@"列表循环", @"单曲循环", @"随机播放"][_mode]; }
 
 - (void)observeValueForKeyPath:(NSString *)k ofObject:(id)o change:(NSDictionary *)c context:(void *)x {
+    // AVFoundation may call this on a background thread; UI must only be touched on main
+    dispatch_async(dispatch_get_main_queue(), ^{ [self handleKVO:o]; });
+}
+- (void)handleKVO:(id)o {
     if (o == _p) {
         [[NSNotificationCenter defaultCenter] postNotificationName:LTBNoteState object:nil];
         [self updateNowPlaying];
