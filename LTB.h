@@ -62,7 +62,13 @@ void LTBImage(NSString *url, void (^cb)(UIImage *));
 - (void)start;
 @end
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 UIView *LTBEntryPill(void);
+#ifdef __cplusplus
+}
+#endif
 
 #define LTBP [LTBPlayer shared]
 #define LTBMgr [LTBManager shared]
