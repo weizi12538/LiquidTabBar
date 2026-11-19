@@ -62,7 +62,18 @@ static UIBezierPath *Pillow(CGRect r, CGFloat cr, CGFloat b) {
     CAShapeLayer *_mask, *_rim; CAGradientLayer *_hl;
 }
 - (instancetype)init {
-    self = [super initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
+    // iOS 26: use the system Liquid Glass material, then clip it to our curved shape
+    UIVisualEffect *eff = nil; BOOL native = NO;
+    Class gc = NSClassFromString(@"UIGlassEffect");
+    if (gc && LTBBool(@"nativeGlass", YES)) {
+        @try {
+            eff = [[gc alloc] init];
+            @try { [(NSObject *)eff setValue:@YES forKey:@"interactive"]; } @catch (NSException *x) {}
+            native = eff != nil;
+        } @catch (NSException *x) { eff = nil; }
+    }
+    if (!eff) eff = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+    self = [super initWithEffect:eff];
     if (self) {
         _radius = 24; _bulge = 0;
         _hl = [CAGradientLayer layer];
@@ -71,6 +82,7 @@ static UIBezierPath *Pillow(CGRect r, CGFloat cr, CGFloat b) {
         [self.contentView.layer insertSublayer:_hl atIndex:0];
         _rim = [CAShapeLayer layer]; _rim.fillColor = nil; _rim.lineWidth = 1.4; _rim.strokeColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
         [self.contentView.layer addSublayer:_rim];
+        if (native) { _hl.hidden = YES; _rim.lineWidth = 1.0; _rim.strokeColor = [UIColor colorWithWhite:1 alpha:0.45].CGColor; }
         _mask = [CAShapeLayer layer]; self.layer.mask = _mask;
     }
     return self;
@@ -618,7 +630,7 @@ UIView *LTBEntryPill(void) { return [LTBEntry new]; }
     NSMutableArray *qk = [NSMutableArray array];
     for (NSDictionary *d in QuickItems()) [qk addObject:@{@"t": d[@"t"], @"k": [@"qk_" stringByAppendingString:d[@"id"]], @"y": @"sw"}];
     _data = @[
-        @{@"h": @"总开关", @"f": @"关闭后恢复微信原生底栏。", @"r": @[@{@"t": @"启用液态底栏", @"k": @"enabled", @"y": @"sw"}]},
+        @{@"h": @"总开关", @"f": @"关闭后恢复微信原生底栏。系统液态玻璃仅 iOS 26 有效，修改后需重启微信。", @"r": @[@{@"t": @"启用液态底栏", @"k": @"enabled", @"y": @"sw"}, @{@"t": @"系统液态玻璃 (iOS 26)", @"k": @"nativeGlass", @"y": @"sw"}]},
         @{@"h": @"底栏上方按钮", @"r": @[
             @{@"t": @"显示左侧按钮", @"k": @"showLeft", @"y": @"sw"}, @{@"t": @"显示右侧按钮", @"k": @"showRight", @"y": @"sw"},
             @{@"t": @"左侧按钮功能", @"k": @"leftAct", @"y": @"ch", @"d": @"wxsettings", @"o": act},
