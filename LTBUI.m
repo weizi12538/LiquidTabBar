@@ -1,7 +1,9 @@
 #import "LTB.h"
 #import <objc/runtime.h>
+#import <objc/message.h>
 #pragma clang diagnostic ignored "-Wunused-function"
 #pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-but-set-variable"
 
 #pragma mark - helpers
 static UIColor *Red(void) { return [UIColor colorWithRed:1 green:0.23 blue:0.19 alpha:1]; }
@@ -32,7 +34,7 @@ static UIButton *Btn(NSString *sym, CGFloat pt, id t, SEL s) {
 // Quick panel items (same grid as the reference video). "u" = WeChat URL, "a" = internal action, neither = not wired yet
 static NSArray *QuickItems(void) {
     return @[
-        @{@"id": @"scan", @"t": @"扫一扫", @"s": @"viewfinder", @"u": @"weixin://scanqrcode"},
+        @{@"id": @"scan", @"t": @"扫一扫", @"s": @"viewfinder", @"a": @"scan"},
         @{@"id": @"pay", @"t": @"收付款", @"s": @"creditcard", @"u": @"weixin://dl/offlinepay/"},
         @{@"id": @"wallet", @"t": @"钱包", @"s": @"wallet.pass", @"u": @"weixin://dl/wallet"},
         @{@"id": @"myqr", @"t": @"我的二维码", @"s": @"qrcode", @"u": @"weixin://dl/qrcode"},
@@ -43,9 +45,9 @@ static NSArray *QuickItems(void) {
         @{@"id": @"mini", @"t": @"小程序", @"s": @"link", @"u": @"weixin://dl/miniprogram"},
         @{@"id": @"note", @"t": @"笔记", @"s": @"note.text", @"u": @"weixin://dl/notes"},
         @{@"id": @"dark", @"t": @"深色模式", @"s": @"moon.fill", @"a": @"dark"},
-        @{@"id": @"bg", @"t": @"聊天背景", @"s": @"photo"},
-        @{@"id": @"font", @"t": @"字体 Font", @"s": @"textformat"},
-        @{@"id": @"card", @"t": @"首页卡片", @"s": @"rectangle.stack"},
+        @{@"id": @"bg", @"t": @"聊天背景", @"s": @"photo", @"a": @"liquidui"},
+        @{@"id": @"font", @"t": @"字体 Font", @"s": @"textformat", @"a": @"liquidui"},
+        @{@"id": @"card", @"t": @"首页卡片", @"s": @"rectangle.stack", @"a": @"liquidui"},
         @{@"id": @"acct", @"t": @"切换账号", @"s": @"person.text.rectangle.fill"},
         @{@"id": @"ltbset", @"t": @"底栏设置", @"s": @"slider.horizontal.3", @"a": @"settings"},
         @{@"id": @"wxset", @"t": @"微信设置", @"s": @"gearshape", @"a": @"wxsettings"},
@@ -55,6 +57,66 @@ static NSArray *QuickItems(void) {
 @interface LTBManager (Private)
 - (void)toast:(NSString *)t;
 @end
+
+// Open a weixin:// deep link INSIDE this process. Never hand it to the system, otherwise iOS routes it to the original WeChat app.
+static void OpenWX(NSString *s) {
+    NSURL *url = [NSURL URLWithString:s]; UIApplication *app = [UIApplication sharedApplication]; id d = app.delegate; BOOL handled = NO, tried = NO;
+    @try {
+        if ([d respondsToSelector:@selector(application:openURL:options:)]) { tried = YES; handled = [d application:app openURL:url options:@{}]; }
+        else if ([d respondsToSelector:@selector(application:openURL:sourceApplication:annotation:)]) { tried = YES; handled = [d application:app openURL:url sourceApplication:nil annotation:@{}]; }
+    } @catch (NSException *e) {}
+    (void)handled;
+    if (!tried) [LTBMgr toast:@"该入口暂不可用"];
+}
+static NSString *AvatarURL(void) {
+    @try {
+        Class sc = NSClassFromString(@"MMServiceCenter"), cm = NSClassFromString(@"CContactMgr"); if (!sc || !cm) return nil;
+        id center = ((id (*)(Class, SEL))objc_msgSend)(sc, NSSelectorFromString(@"defaultCenter"));
+        id mgr = ((id (*)(id, SEL, Class))objc_msgSend)(center, NSSelectorFromString(@"getService:"), cm);
+        id me = ((id (*)(id, SEL))objc_msgSend)(mgr, NSSelectorFromString(@"getSelfContact"));
+        for (NSString *k in @[@"m_nsHeadHDImgUrl", @"m_nsHeadImgUrl"]) {
+            @try { id v = [me valueForKey:k]; if ([v isKindOfClass:[NSString class]] && [v length]) return v; } @catch (NSException *e) {}
+        }
+    } @catch (NSException *e) {}
+    return nil;
+}
+// ---- simulate a tap on a row of WeChat's own UI (works without knowing internal class names)
+static UILabel *FindLabel(UIView *v, NSString *text, int d, int *budget) {
+    if ((*budget)-- <= 0 || d > 22) return nil;
+    if ([v isKindOfClass:[UILabel class]] && [((UILabel *)v).text isEqualToString:text] && !v.hidden && v.window) return (UILabel *)v;
+    for (UIView *s in v.subviews) { UILabel *r = FindLabel(s, text, d + 1, budget); if (r) return r; }
+    return nil;
+}
+static BOOL FireGR(UIGestureRecognizer *g) {
+    BOOL did = NO;
+    @try {
+        NSArray *targets = [g valueForKey:@"targets"];
+        for (id t in targets) {
+            id tgt = [t valueForKey:@"target"]; Ivar iv = class_getInstanceVariable([t class], "_action"); if (!tgt || !iv) continue;
+            SEL a = *(SEL *)((uint8_t *)(__bridge void *)t + ivar_getOffset(iv)); if (!a || ![tgt respondsToSelector:a]) continue;
+            ((void (*)(id, SEL, id))objc_msgSend)(tgt, a, g); did = YES;
+        }
+    } @catch (NSException *e) {}
+    return did;
+}
+static BOOL FireTap(UIView *v) {
+    int depth = 0;
+    for (UIView *x = v; x && depth < 9; x = x.superview, depth++) {
+        if ([x isKindOfClass:[UITableViewCell class]]) {
+            UITableView *tv = nil; for (UIView *p = x.superview; p; p = p.superview) if ([p isKindOfClass:[UITableView class]]) { tv = (UITableView *)p; break; }
+            NSIndexPath *ip = tv ? [tv indexPathForCell:(UITableViewCell *)x] : nil;
+            if (tv && ip && [tv.delegate respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) { [tv.delegate tableView:tv didSelectRowAtIndexPath:ip]; return YES; }
+        }
+        if ([x isKindOfClass:[UICollectionViewCell class]]) {
+            UICollectionView *cv = nil; for (UIView *p = x.superview; p; p = p.superview) if ([p isKindOfClass:[UICollectionView class]]) { cv = (UICollectionView *)p; break; }
+            NSIndexPath *ip = cv ? [cv indexPathForCell:(UICollectionViewCell *)x] : nil;
+            if (cv && ip && [cv.delegate respondsToSelector:@selector(collectionView:didSelectItemAtIndexPath:)]) { [cv.delegate collectionView:cv didSelectItemAtIndexPath:ip]; return YES; }
+        }
+        if ([x isKindOfClass:[UIControl class]] && ((UIControl *)x).allTargets.count) { [(UIControl *)x sendActionsForControlEvents:UIControlEventTouchUpInside]; return YES; }
+        for (UIGestureRecognizer *g in x.gestureRecognizers) if ([g isKindOfClass:[UITapGestureRecognizer class]] && FireGR(g)) return YES;
+    }
+    return NO;
+}
 
 #pragma mark - shapes
 // rounded "pillow" (used by panels)
@@ -108,35 +170,62 @@ static UIBezierPath *ArcCapsule(CGRect r, CGFloat rad, CGFloat drop) {
     return p;
 }
 
-#pragma mark - glass (blurred, clipped to a custom shape)
+#pragma mark - glass
+// iOS 26 Liquid Glass (UIGlassEffect). Falls back to a blurred, self-drawn glass on older systems or when chosen in settings.
+static NSString *GlassMode(void) {
+    if (!NSClassFromString(@"UIGlassEffect")) return @"blur";
+    return LTBStr(@"glass", @"bent");
+}
+static UIVisualEffectView *MakeGlass(void) {
+    Class gc = NSClassFromString(@"UIGlassEffect"); id e = [[gc alloc] init];
+    @try { [(NSObject *)e setValue:@NO forKey:@"interactive"]; } @catch (NSException *x) {}
+    return [[UIVisualEffectView alloc] initWithEffect:(UIVisualEffect *)e];
+}
+static void GlassShape(UIView *v, CGFloat r, BOOL capsule) {
+    v.layer.cornerRadius = r; v.layer.cornerCurve = kCACornerCurveContinuous;
+    if (capsule) {
+        @try {
+            Class cc = NSClassFromString(@"UICornerConfiguration"); SEL s = NSSelectorFromString(@"capsuleConfiguration");
+            if (cc && [cc respondsToSelector:s]) { id conf = ((id (*)(Class, SEL))objc_msgSend)(cc, s); if (conf) [v setValue:conf forKey:@"cornerConfiguration"]; }
+        } @catch (NSException *x) {}
+    }
+}
+
 @interface LTBGlass : UIView
 @property(nonatomic) CGFloat radius, bulge;
 @property(nonatomic, readonly) UIView *contentView;
 @end
 @implementation LTBGlass {
-    UIVisualEffectView *_blur; CAShapeLayer *_fill, *_rim, *_mask; UIView *_content;
+    UIVisualEffectView *_blur, *_gv; CAShapeLayer *_fill, *_rim, *_mask; UIView *_content; BOOL _native;
 }
 - (instancetype)init {
     if (!(self = [super init])) return nil;
-    _radius = 24; _bulge = 0;
-    _blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]]; _blur.hidden = !LTBBool(@"blur", YES);
-    [self addSubview:_blur];
-    _fill = [CAShapeLayer layer]; [self.layer addSublayer:_fill];
+    _radius = 24; _bulge = 0; _native = ![GlassMode() isEqual:@"blur"];
+    if (_native) { _gv = MakeGlass(); [self addSubview:_gv]; }
+    else {
+        _blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]]; [self addSubview:_blur];
+        _fill = [CAShapeLayer layer]; [self.layer addSublayer:_fill];
+    }
     _content = [UIView new]; _content.backgroundColor = UIColor.clearColor; [self addSubview:_content];
-    _rim = [CAShapeLayer layer]; _rim.fillColor = nil; _rim.lineWidth = 1.4; [self.layer addSublayer:_rim];
-    _mask = [CAShapeLayer layer]; self.layer.mask = _mask;
+    if (!_native) {
+        _rim = [CAShapeLayer layer]; _rim.fillColor = nil; _rim.lineWidth = 1.4; [self.layer addSublayer:_rim];
+        _mask = [CAShapeLayer layer]; self.layer.mask = _mask;
+    }
     return self;
 }
 - (UIView *)contentView { return _content; }
 - (void)updateColors {
-    UITraitCollection *tc = self.traitCollection; BOOL blur = !_blur.hidden;
-    _fill.fillColor = [(blur ? Dyn(1, 0.62, 0.10, 0.52) : Dyn(0.985, 0.94, 0.13, 0.93)) resolvedColorWithTraitCollection:tc].CGColor;
+    if (_native) return;
+    UITraitCollection *tc = self.traitCollection;
+    _fill.fillColor = [Dyn(1, 0.62, 0.10, 0.52) resolvedColorWithTraitCollection:tc].CGColor;
     _rim.strokeColor = [Dyn(1.0, 0.95, 1.0, 0.22) resolvedColorWithTraitCollection:tc].CGColor;
 }
 - (void)traitCollectionDidChange:(UITraitCollection *)p { [super traitCollectionDidChange:p]; [self updateColors]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGRect b = self.bounds; _blur.frame = b; _content.frame = b; if (b.size.width < 2) return;
+    CGRect b = self.bounds; _content.frame = b; if (b.size.width < 2) return;
+    if (_native) { _gv.frame = b; CGFloat m = MIN(b.size.width, b.size.height) / 2, r = MIN(_radius, m); GlassShape(_gv, r, r >= m - 0.5); return; }
+    _blur.frame = b;
     UIBezierPath *p = Pillow(b, _radius, _bulge, _bulge * 0.5, _bulge * 0.4);
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     _fill.frame = b; _fill.path = p.CGPath; _rim.frame = b; _rim.path = p.CGPath; _mask.frame = b; _mask.path = p.CGPath;
@@ -159,16 +248,18 @@ static UIBezierPath *ArcCapsule(CGRect r, CGFloat rad, CGFloat drop) {
 - (instancetype)initWithFrame:(CGRect)f controller:(UITabBarController *)t;
 - (void)syncSelection;
 - (void)syncBadges;
+- (void)refreshCenter;
 @end
 
 @implementation LTBBar {
-    UIVisualEffectView *_blur; CAShapeLayer *_fill, *_rim, *_mask;
+    UIVisualEffectView *_blur, *_tabHost, *_stripG, *_lG, *_rG; NSMutableArray<UIVisualEffectView *> *_segs;
+    CAShapeLayer *_fill, *_rim, *_mask; BOOL _glass; NSString *_mode;
     UIView *_pill, *_p0, *_p1, *_trk, *_fil;
     NSMutableArray<UIButton *> *_items; NSMutableArray<UILabel *> *_badges; NSMutableArray<NSString *> *_badgeCache;
     UIButton *_prev, *_play, *_next, *_lb, *_rb;
     UIImageView *_art, *_disc; UIScrollView *_sv; UIPageControl *_pc;
     UILabel *_title, *_artist, *_searchLbl;
-    NSInteger _sel; CGFloat _stripTop; CGRect _tabR, _stripR;
+    NSInteger _sel; CGFloat _stripTop, _tabRad, _tabDrop; CGRect _tabR, _stripR;
 }
 - (CGFloat)stripTop { return _stripTop; }
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e { UIView *v = [super hitTest:p withEvent:e]; return v == self ? nil : v; }
@@ -176,11 +267,21 @@ static UIBezierPath *ArcCapsule(CGRect r, CGFloat rad, CGFloat drop) {
 - (instancetype)initWithFrame:(CGRect)f controller:(UITabBarController *)t {
     if (!(self = [super initWithFrame:f])) return nil;
     _tbc = t; _items = [NSMutableArray array]; _badges = [NSMutableArray array]; _badgeCache = [NSMutableArray array]; _sel = -1;
-    _blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]]; _blur.hidden = !LTBBool(@"blur", YES);
+    _mode = GlassMode(); _glass = ![_mode isEqual:@"blur"]; _tabRad = 27; _tabDrop = [_mode isEqual:@"flat"] ? 0 : 26;
+    _blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]];
     [self addSubview:_blur];
     _fill = [CAShapeLayer layer]; _rim = [CAShapeLayer layer]; _rim.fillColor = nil; _rim.lineWidth = 1.6;
     [self.layer addSublayer:_fill]; [self.layer addSublayer:_rim];
     _mask = [CAShapeLayer layer]; _blur.layer.mask = _mask;
+    if (_glass) {
+        _blur.hidden = YES; _fill.hidden = YES; _rim.hidden = YES;
+        // the bent tab bar is several overlapping glass capsules in one glass container so they merge into one liquid shape
+        Class gcc = NSClassFromString(@"UIGlassContainerEffect"); id ce = gcc ? [[gcc alloc] init] : nil;
+        _tabHost = [[UIVisualEffectView alloc] initWithEffect:(UIVisualEffect *)ce]; [self addSubview:_tabHost];
+        _segs = [NSMutableArray array]; int N = [_mode isEqual:@"flat"] ? 1 : 6;
+        for (int k = 0; k < N; k++) { UIVisualEffectView *g = MakeGlass(); [_tabHost.contentView addSubview:g]; [_segs addObject:g]; }
+        _stripG = MakeGlass(); _lG = MakeGlass(); _rG = MakeGlass(); [self addSubview:_stripG]; [self addSubview:_lG]; [self addSubview:_rG];
+    }
 
     _pill = [UIView new]; _pill.backgroundColor = Dyn(0.0, 0.07, 1.0, 0.10); _pill.layer.cornerCurve = kCACornerCurveContinuous; _pill.userInteractionEnabled = NO;
     [self addSubview:_pill];
@@ -198,7 +299,7 @@ static UIBezierPath *ArcCapsule(CGRect r, CGFloat rad, CGFloat drop) {
         [self addSubview:bg]; [_badges addObject:bg]; [_badgeCache addObject:@""];
     }
     _disc = [UIImageView new]; _disc.contentMode = UIViewContentModeScaleAspectFill; _disc.clipsToBounds = YES; _disc.userInteractionEnabled = YES;
-    [_disc addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapMini)]];
+    [_disc addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapDisc)]];
     [_disc addGestureRecognizer:[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(longDisc:)]];
     [self addSubview:_disc];
 
@@ -228,47 +329,65 @@ static UIBezierPath *ArcCapsule(CGRect r, CGFloat rad, CGFloat drop) {
     [nc addObserver:self selector:@selector(progress) name:LTBNoteProgress object:nil];
     [nc addObserver:self selector:@selector(prefs) name:LTBNotePrefs object:nil];
     [self refresh]; [self prefs]; [self syncSelection];
+    // the avatar service may not be ready right at launch
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self refreshCenter]; });
     return self;
 }
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 - (void)setQuickOpen:(BOOL)o { _quickOpen = o; }
 
 static NSString *ActSym(NSString *a) {
-    return @{@"scan": @"viewfinder", @"wxsettings": @"gearshape.fill", @"settings": @"slider.horizontal.3", @"quick": @"puzzlepiece.extension", @"music": @"music.note.list", @"inbox": @"envelope", @"none": @"circle.dashed"}[a] ?: @"circle";
+    return @{@"scan": @"viewfinder", @"wxsettings": @"gearshape.fill", @"liquidui": @"slider.horizontal.3", @"settings": @"slider.horizontal.3", @"quick": @"puzzlepiece.extension", @"music": @"music.note.list", @"inbox": @"envelope", @"none": @"circle.dashed"}[a] ?: @"circle";
 }
 - (void)prefs {
     [_lb setImage:SF(ActSym(LTBStr(@"leftAct", @"wxsettings")), 21, UIImageSymbolWeightRegular) forState:UIControlStateNormal];
     [_rb setImage:SF(ActSym(LTBStr(@"rightAct", @"quick")), 21, UIImageSymbolWeightRegular) forState:UIControlStateNormal];
-    [self setNeedsLayout];
+    [self refreshCenter]; [self setNeedsLayout];
 }
 - (void)updateColors {
-    UITraitCollection *tc = self.traitCollection; BOOL blur = !_blur.hidden;
-    _fill.fillColor = [(blur ? Dyn(1, 0.60, 0.10, 0.50) : Dyn(0.97, 0.93, 0.13, 0.93)) resolvedColorWithTraitCollection:tc].CGColor;
+    if (_glass) return;
+    UITraitCollection *tc = self.traitCollection;
+    _fill.fillColor = [Dyn(1, 0.60, 0.10, 0.50) resolvedColorWithTraitCollection:tc].CGColor;
     _rim.strokeColor = [Dyn(1.0, 0.95, 1.0, 0.25) resolvedColorWithTraitCollection:tc].CGColor;
 }
 - (void)traitCollectionDidChange:(UITraitCollection *)p { [super traitCollectionDidChange:p]; [self updateColors]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat W = self.bounds.size.width, H = self.bounds.size.height, safe = self.safeAreaInsets.bottom;
-    CGFloat mB = MAX(safe - 14, 10), tabRad = 27, tabDrop = 26, sRad = 23, sDrop = 8, bsz = 44, side = round(W * 0.05);
+    BOOL flat = _tabDrop == 0; CGFloat tabRad = _tabRad, tabDrop = _tabDrop, sRad = 23, sDrop = flat ? 0 : 8, bsz = 44, side = round(W * 0.05), mB = MAX(safe - 14, 10);
+    NSString *sm = LTBStr(@"stripMode", @"both"); BOOL stripOff = [sm isEqual:@"off"];
     _tabR = CGRectMake(side, H - mB - (2 * tabRad + tabDrop), W - 2 * side, 2 * tabRad + tabDrop);
     CGFloat sTop = _tabR.origin.y - 2 * sRad - 5; _stripTop = sTop;
     BOOL sl = LTBBool(@"showLeft", YES), sr = LTBBool(@"showRight", YES);
     CGFloat bx = round(W * 0.043), x0 = sl ? bx + bsz + 10 : side, x1 = sr ? W - bx - bsz - 10 : W - side;
     _stripR = CGRectMake(x0, sTop, x1 - x0, 2 * sRad + sDrop);
-    CGFloat by = sTop + sRad + 12;
+    CGFloat by = flat ? sTop + sRad - bsz / 2 + 2 : sTop + sRad + 12;
     CGRect lr = CGRectMake(bx, by, bsz, bsz), rr = CGRectMake(W - bx - bsz, by, bsz, bsz);
     _lb.hidden = !sl; _rb.hidden = !sr; _lb.frame = lr; _rb.frame = rr;
 
-    UIBezierPath *all = [UIBezierPath bezierPath];
-    [all appendPath:ArcCapsule(_tabR, tabRad, tabDrop)]; [all appendPath:ArcCapsule(_stripR, sRad, sDrop)];
-    if (sl) [all appendPath:[UIBezierPath bezierPathWithOvalInRect:lr]];
-    if (sr) [all appendPath:[UIBezierPath bezierPathWithOvalInRect:rr]];
-    [CATransaction begin]; [CATransaction setDisableActions:YES];
-    _blur.frame = self.bounds; _mask.frame = self.bounds; _mask.path = all.CGPath;
-    _fill.frame = self.bounds; _fill.path = all.CGPath; _rim.frame = self.bounds; _rim.path = all.CGPath;
-    [CATransaction commit];
-    [self updateColors];
+    if (_glass) {
+        _tabHost.frame = _tabR; CGRect lt = CGRectMake(0, 0, _tabR.size.width, _tabR.size.height); NSUInteger N = _segs.count;
+        for (NSUInteger k = 0; k < N; k++) {
+            UIVisualEffectView *g = _segs[k]; g.transform = CGAffineTransformIdentity;
+            if (N == 1) { g.bounds = CGRectMake(0, 0, lt.size.width, 2 * tabRad); g.center = CGPointMake(lt.size.width / 2, lt.size.height / 2); GlassShape(g, tabRad, YES); continue; }
+            CGFloat xa = tabRad, xb = lt.size.width - tabRad, step = (xb - xa) / (N - 1), cx = xa + step * k;
+            CGFloat w = (k == 0 || k == N - 1) ? 2 * tabRad : MAX(2 * tabRad, step * 2.0);
+            g.bounds = CGRectMake(0, 0, w, 2 * tabRad); g.center = CGPointMake(cx, CapCY(lt, tabRad, tabDrop, cx)); GlassShape(g, tabRad, YES);
+            g.transform = CGAffineTransformMakeRotation(CapAngle(lt, tabRad, tabDrop, cx));
+        }
+        _stripG.hidden = stripOff; _stripG.frame = CGRectMake(_stripR.origin.x, _stripR.origin.y + sDrop / 2, _stripR.size.width, 2 * sRad); GlassShape(_stripG, sRad, YES);
+        _lG.hidden = !sl; _rG.hidden = !sr; _lG.frame = lr; _rG.frame = rr; GlassShape(_lG, bsz / 2, YES); GlassShape(_rG, bsz / 2, YES);
+    } else {
+        UIBezierPath *all = [UIBezierPath bezierPath];
+        [all appendPath:ArcCapsule(_tabR, tabRad, tabDrop)]; if (!stripOff) [all appendPath:ArcCapsule(_stripR, sRad, sDrop)];
+        if (sl) [all appendPath:[UIBezierPath bezierPathWithOvalInRect:lr]];
+        if (sr) [all appendPath:[UIBezierPath bezierPathWithOvalInRect:rr]];
+        [CATransaction begin]; [CATransaction setDisableActions:YES];
+        _blur.frame = self.bounds; _mask.frame = self.bounds; _mask.path = all.CGPath;
+        _fill.frame = self.bounds; _fill.path = all.CGPath; _rim.frame = self.bounds; _rim.path = all.CGPath;
+        [CATransaction commit];
+        [self updateColors];
+    }
 
     NSUInteger n = _items.count, slots = n + 1, di = n / 2; CGFloat ix0 = _tabR.origin.x + 24, sw = (_tabR.size.width - 48) / slots;
     for (NSUInteger i = 0; i < n; i++) {
@@ -280,14 +399,13 @@ static NSString *ActSym(NSString *a) {
     [self placePill:NO];
 
     NSMutableArray *pages = [NSMutableArray array];
-    if (LTBBool(@"showMini", YES)) [pages addObject:_p0];
-    if (LTBBool(@"showSearch", YES)) [pages addObject:_p1];
-    if (!pages.count) [pages addObject:_p0];
-    _p0.hidden = ![pages containsObject:_p0]; _p1.hidden = ![pages containsObject:_p1];
+    if ([sm isEqual:@"both"] || [sm isEqual:@"mini"]) [pages addObject:_p0];
+    if ([sm isEqual:@"both"] || [sm isEqual:@"search"]) [pages addObject:_p1];
+    _sv.hidden = stripOff; _p0.hidden = ![pages containsObject:_p0]; _p1.hidden = ![pages containsObject:_p1];
     CGFloat w = _stripR.size.width - 16, h = 2 * sRad;
-    _sv.frame = CGRectMake(_stripR.origin.x + 8, _stripR.origin.y + 2, w, h); _sv.contentSize = CGSizeMake(w * pages.count, h);
-    for (NSUInteger i = 0; i < pages.count; i++) ((UIView *)pages[i]).frame = CGRectMake(w * i, 0, w, h);
-    _pc.numberOfPages = pages.count; _pc.hidden = pages.count < 2; _pc.frame = CGRectMake(_stripR.origin.x, CGRectGetMaxY(_stripR) - 14, _stripR.size.width - 8, 8); _pc.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
+    _sv.frame = CGRectMake(_stripR.origin.x + 8, _stripR.origin.y + (flat ? 0 : 2), w, h); _sv.contentSize = CGSizeMake(w * MAX(pages.count, 1), h);
+    for (NSUInteger k = 0; k < pages.count; k++) ((UIView *)pages[k]).frame = CGRectMake(w * k, 0, w, h);
+    _pc.numberOfPages = pages.count; _pc.hidden = stripOff || pages.count < 2; _pc.frame = CGRectMake(_stripR.origin.x, CGRectGetMaxY(_stripR) - 14, _stripR.size.width - 8, 8);
     CGFloat tw2 = w - 54 - 128;
     _art.frame = CGRectMake(4, 3, 40, 40); _art.layer.cornerRadius = 20;
     _title.frame = CGRectMake(54, 5, tw2, 19); _artist.frame = CGRectMake(54, 24, tw2, 14);
@@ -299,7 +417,7 @@ static NSString *ActSym(NSString *a) {
     if (_sel < 0 || _sel >= (NSInteger)_items.count) return;
     UIButton *b = _items[_sel]; CGFloat pw = _tabR.size.width * 0.225, ph = 46;
     CGFloat cx = MAX(_tabR.origin.x + 6 + pw / 2, MIN(b.center.x, CGRectGetMaxX(_tabR) - 6 - pw / 2));
-    CGPoint c = CGPointMake(cx, CapCY(_tabR, 27, 26, cx)); CGFloat ang = CapAngle(_tabR, 27, 26, cx);
+    CGPoint c = CGPointMake(cx, CapCY(_tabR, _tabRad, _tabDrop, cx)); CGFloat ang = CapAngle(_tabR, _tabRad, _tabDrop, cx);
     void (^set)(void) = ^{
         self->_pill.transform = CGAffineTransformIdentity; self->_pill.bounds = CGRectMake(0, 0, pw, ph); self->_pill.center = c;
         self->_pill.layer.cornerRadius = ph / 2; self->_pill.transform = CGAffineTransformMakeRotation(ang);
@@ -330,10 +448,29 @@ static NSString *ActSym(NSString *a) {
 - (void)refresh {
     LTBSong *s = LTBP.song;
     _title.text = s.name ?: @"未在播放"; _artist.text = s.artist ?: @"点击打开音乐面板";
-    if (!s.pic) {
-        for (UIImageView *iv in @[_art, _disc]) { iv.image = SF(@"music.note", 18, UIImageSymbolWeightRegular); iv.tintColor = UIColor.whiteColor; iv.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1]; iv.contentMode = UIViewContentModeCenter; }
-    } else LTBImage(s.pic, ^(UIImage *i) { if (LTBP.song == s && i) { for (UIImageView *iv in @[self->_art, self->_disc]) { iv.image = i; iv.contentMode = UIViewContentModeScaleAspectFill; } } });
+    if (!s.pic) { _art.image = SF(@"music.note", 18, UIImageSymbolWeightRegular); _art.tintColor = UIColor.whiteColor; _art.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1]; _art.contentMode = UIViewContentModeCenter; }
+    else LTBImage(s.pic, ^(UIImage *i) { if (LTBP.song == s && i) { self->_art.image = i; self->_art.contentMode = UIViewContentModeScaleAspectFill; } });
     [_play setImage:SF(LTBP.playing ? @"pause.fill" : @"play.fill", 19, UIImageSymbolWeightSemibold) forState:UIControlStateNormal];
+    [self refreshCenter];
+}
+// what the middle button of the tab bar shows: album cover / my avatar / a picked photo / plus / note / nothing
+- (void)refreshCenter {
+    NSString *st = LTBStr(@"centerStyle", @"cover"); _disc.hidden = [st isEqual:@"none"]; if (_disc.hidden) return;
+    void (^ph)(NSString *) = ^(NSString *sym) {
+        self->_disc.image = SF(sym, 20, UIImageSymbolWeightRegular); self->_disc.tintColor = UIColor.whiteColor;
+        self->_disc.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1]; self->_disc.contentMode = UIViewContentModeCenter;
+    };
+    void (^img)(UIImage *) = ^(UIImage *i) { self->_disc.image = i; self->_disc.backgroundColor = UIColor.clearColor; self->_disc.contentMode = UIViewContentModeScaleAspectFill; };
+    if ([st isEqual:@"plus"]) { _disc.image = SF(@"plus", 22, UIImageSymbolWeightSemibold); _disc.tintColor = UIColor.labelColor; _disc.backgroundColor = Dyn(1, 1, 0.30, 1); _disc.contentMode = UIViewContentModeCenter; }
+    else if ([st isEqual:@"note"]) ph(@"music.note");
+    else if ([st isEqual:@"photo"]) { UIImage *i = [UIImage imageWithContentsOfFile:LTBStr(@"centerPhoto", @"")]; if (i) img(i); else ph(@"photo"); }
+    else if ([st isEqual:@"avatar"]) {
+        NSString *au = AvatarURL(); ph(@"person.fill");
+        if (au) LTBImage(au, ^(UIImage *i) { if (i && [LTBStr(@"centerStyle", @"cover") isEqual:@"avatar"]) img(i); });
+    } else {
+        LTBSong *s = LTBP.song; ph(@"music.note");
+        if (s.pic) LTBImage(s.pic, ^(UIImage *i) { if (i && LTBP.song == s && [LTBStr(@"centerStyle", @"cover") isEqual:@"cover"]) img(i); });
+    }
 }
 - (void)progress {
     CGFloat f = LTBP.duration > 0 ? LTBP.current / LTBP.duration : 0; _fil.frame = CGRectMake(0, 0, _trk.bounds.size.width * MIN(MAX(f, 0), 1), 2);
@@ -341,6 +478,7 @@ static NSString *ActSym(NSString *a) {
 - (void)scrollViewDidScroll:(UIScrollView *)s { if (s.bounds.size.width > 0) _pc.currentPage = (NSInteger)lround(s.contentOffset.x / s.bounds.size.width); }
 - (void)doPrev { [LTBP prev]; } - (void)doNext { [LTBP next]; } - (void)doPlay { [LTBP toggle]; }
 - (void)tapMini { [LTBMgr openMusic:NO]; }
+- (void)tapDisc { [LTBMgr runAction:LTBStr(@"centerAct", @"music")]; }
 - (void)longDisc:(UILongPressGestureRecognizer *)g { if (g.state == UIGestureRecognizerStateBegan) { [LTBP toggle]; [[UIImpactFeedbackGenerator new] impactOccurred]; } }
 - (void)tapSearch { [LTBMgr openMusic:YES]; }
 - (void)tapLeft { [LTBMgr runAction:LTBStr(@"leftAct", @"wxsettings")]; }
@@ -548,7 +686,7 @@ static NSString *ActSym(NSString *a) {
 - (void)tap:(LTBQItem *)b {
     for (NSDictionary *d in QuickItems()) if ([d[@"id"] isEqual:b.ident]) {
         if (d[@"a"]) { [LTBMgr runAction:d[@"a"]]; return; }
-        if (d[@"u"]) { [LTBMgr closePanels]; [[UIApplication sharedApplication] openURL:[NSURL URLWithString:d[@"u"]] options:@{} completionHandler:nil]; return; }
+        if (d[@"u"]) { [LTBMgr closePanels]; OpenWX(d[@"u"]); return; }
         [LTBMgr toast:@"该功能暂未接入"];
     }
 }
@@ -660,10 +798,11 @@ static UIViewController *TopVC(void) { UIViewController *t = KeyWin().rootViewCo
 }
 - (void)runAction:(NSString *)a {
     if ([a isEqual:@"wxsettings"]) [self openWeChatSettings];
+    else if ([a isEqual:@"liquidui"]) { [self closePanels]; [self tapMeRow:@"插件" native:NO]; }
     else if ([a isEqual:@"settings"]) [self openSettings];
     else if ([a isEqual:@"quick"]) [self openQuick];
     else if ([a isEqual:@"music"]) [self openMusic:NO];
-    else if ([a isEqual:@"scan"]) { [self closePanels]; [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"weixin://scanqrcode"] options:@{} completionHandler:nil]; }
+    else if ([a isEqual:@"scan"]) { [self closePanels]; OpenWX(@"weixin://scanqrcode"); }
     else if ([a isEqual:@"inbox"]) {
         [self closePanels]; UITabBarController *t = _tbc; if (!t.viewControllers.count) return;
         t.selectedIndex = 0; UIViewController *v = t.viewControllers[0]; if ([v isKindOfClass:[UINavigationController class]]) [(UINavigationController *)v popToRootViewControllerAnimated:YES];
@@ -676,19 +815,33 @@ static UIViewController *TopVC(void) { UIViewController *t = KeyWin().rootViewCo
     if ([top isKindOfClass:[UINavigationController class]] && [((UINavigationController *)top).viewControllers.firstObject isKindOfClass:[LTBSettingsVC class]]) return;
     [top presentViewController:[[UINavigationController alloc] initWithRootViewController:[LTBSettingsVC new]] animated:YES completion:nil];
 }
-- (void)openWeChatSettings {
-    [self closePanels];
-    UITabBarController *t = _tbc; Class c = NSClassFromString(@"NewSettingViewController");
-    if (t && c) {
-        @try {
-            NSUInteger last = t.viewControllers.count - 1;
-            t.selectedIndex = last;
-            UINavigationController *n = [t.viewControllers[last] isKindOfClass:[UINavigationController class]] ? (UINavigationController *)t.viewControllers[last] : nil;
-            if (n) { [n popToRootViewControllerAnimated:NO]; UIViewController *vc = [[c alloc] init]; [n pushViewController:vc animated:YES]; return; }
-        } @catch (NSException *e) {}
-    }
-    [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"weixin://dl/settings"] options:@{} completionHandler:nil];
+// open a row of the "我" page of THIS WeChat (e.g. 设置 / 插件) by simulating the tap, so nothing leaves the app
+- (void)tapMeRow:(NSString *)name native:(BOOL)native {
+    UITabBarController *t = _tbc; if (!t.viewControllers.count) return;
+    NSUInteger last = t.viewControllers.count - 1; t.selectedIndex = last;
+    UIViewController *v = t.viewControllers[last];
+    if ([v isKindOfClass:[UINavigationController class]]) [(UINavigationController *)v popToRootViewControllerAnimated:NO];
+    [self attemptRow:name tries:0 native:native];
 }
+- (void)attemptRow:(NSString *)name tries:(int)n native:(BOOL)native {
+    UITabBarController *t = _tbc; if (!t) return;
+    UIViewController *v = t.viewControllers.lastObject;
+    UIViewController *top = [v isKindOfClass:[UINavigationController class]] ? ((UINavigationController *)v).topViewController : v;
+    int budget = 2500; UILabel *l = top.isViewLoaded ? FindLabel(top.view, name, 0, &budget) : nil;
+    if (l && FireTap(l)) return;
+    if (n < 8) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self attemptRow:name tries:n + 1 native:native]; }); return; }
+    if (native && [self pushNativeSettings]) return;
+    [self toast:[NSString stringWithFormat:@"未找到“%@”入口", name]];
+}
+- (BOOL)pushNativeSettings {
+    UITabBarController *t = _tbc; Class c = NSClassFromString(@"NewSettingViewController"); if (!t || !c) return NO;
+    @try {
+        UIViewController *v = t.viewControllers.lastObject;
+        if ([v isKindOfClass:[UINavigationController class]]) { UIViewController *vc = [[c alloc] init]; [(UINavigationController *)v pushViewController:vc animated:YES]; return YES; }
+    } @catch (NSException *e) {}
+    return NO;
+}
+- (void)openWeChatSettings { [self closePanels]; [self tapMeRow:@"设置" native:YES]; }
 - (void)openMusic:(BOOL)focus {
     if ([_panel isKindOfClass:[LTBMusicPanel class]]) { if (focus) [(LTBMusicPanel *)_panel focusSearch]; else [self closePanels]; return; }
     LTBMusicPanel *p = [LTBMusicPanel new]; p.hingeLeft = YES; [self show:p height:560];
@@ -744,6 +897,8 @@ static UIViewController *TopVC(void) { UIViewController *t = KeyWin().rootViewCo
 UIView *LTBEntryPill(void) { return [LTBEntry new]; }
 
 #pragma mark - settings
+@interface LTBSettingsVC () <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+@end
 @implementation LTBSettingsVC { NSArray *_data; }
 - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
 - (void)viewDidLoad {
@@ -755,22 +910,33 @@ UIView *LTBEntryPill(void) { return [LTBEntry new]; }
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
 - (void)build {
     NSArray *src = @[@[@"netease", @"网易云"], @[@"qq", @"QQ音乐"]];
-    NSArray *act = @[@[@"scan", @"扫一扫"], @[@"wxsettings", @"微信设置"], @[@"settings", @"插件设置"], @[@"quick", @"快捷面板"], @[@"music", @"音乐面板"], @[@"inbox", @"微信首页"], @[@"none", @"无操作"]];
+    NSArray *act = @[@[@"scan", @"扫一扫"], @[@"wxsettings", @"微信设置"], @[@"liquidui", @"LiquidUI 设置"], @[@"settings", @"插件设置"], @[@"quick", @"快捷面板"], @[@"music", @"音乐面板"], @[@"inbox", @"微信首页"], @[@"none", @"无操作"]];
+    NSArray *strip = @[@[@"both", @"迷你播放器 + 搜索（左右滑动）"], @[@"mini", @"仅迷你播放器"], @[@"search", @"仅搜索"], @[@"off", @"隐藏中间条"]];
+    NSArray *center = @[@[@"cover", @"专辑封面"], @[@"avatar", @"我的头像"], @[@"photo", @"自定义图片"], @[@"plus", @"＋ 图标"], @[@"note", @"音符图标"], @[@"none", @"隐藏"]];
+    NSArray *glass = @[@[@"bent", @"液态玻璃 · 弧形（拼接）"], @[@"flat", @"液态玻璃 · 直条"], @[@"blur", @"毛玻璃（旧版）"]];
     NSMutableArray *qk = [NSMutableArray array];
     for (NSDictionary *d in QuickItems()) [qk addObject:@{@"t": d[@"t"], @"k": [@"qk_" stringByAppendingString:d[@"id"]], @"y": @"sw"}];
     _data = @[
-        @{@"h": @"总开关", @"f": @"关闭后恢复微信原生底栏。毛玻璃模糊关闭后更流畅，修改后需重启微信。", @"r": @[@{@"t": @"启用液态底栏", @"k": @"enabled", @"y": @"sw"}, @{@"t": @"毛玻璃模糊", @"k": @"blur", @"y": @"sw"}]},
-        @{@"h": @"底栏上方按钮", @"r": @[
-            @{@"t": @"显示左侧按钮", @"k": @"showLeft", @"y": @"sw"}, @{@"t": @"显示右侧按钮", @"k": @"showRight", @"y": @"sw"},
-            @{@"t": @"左侧按钮功能", @"k": @"leftAct", @"y": @"ch", @"d": @"wxsettings", @"o": act},
-            @{@"t": @"右侧按钮功能", @"k": @"rightAct", @"y": @"ch", @"d": @"quick", @"o": act}]},
-        @{@"h": @"中间条（左右滑动切换）", @"r": @[
-            @{@"t": @"迷你播放器页", @"k": @"showMini", @"y": @"sw"}, @{@"t": @"搜索页", @"k": @"showSearch", @"y": @"sw"}]},
+        @{@"h": @"总开关", @"f": @"关闭后恢复微信原生底栏。", @"r": @[@{@"t": @"启用液态底栏", @"k": @"enabled", @"y": @"sw"}]},
+        @{@"h": @"底栏上方 · 左侧按钮", @"r": @[
+            @{@"t": @"显示", @"k": @"showLeft", @"y": @"sw"},
+            @{@"t": @"点击功能（同时决定图标）", @"k": @"leftAct", @"y": @"ch", @"d": @"wxsettings", @"o": act}]},
+        @{@"h": @"底栏上方 · 中间条", @"r": @[
+            @{@"t": @"显示内容", @"k": @"stripMode", @"y": @"ch", @"d": @"both", @"o": strip}]},
+        @{@"h": @"底栏上方 · 右侧按钮", @"r": @[
+            @{@"t": @"显示", @"k": @"showRight", @"y": @"sw"},
+            @{@"t": @"点击功能（同时决定图标）", @"k": @"rightAct", @"y": @"ch", @"d": @"quick", @"o": act}]},
+        @{@"h": @"底栏中间按钮", @"f": @"“我的头像”读取当前登录账号的头像；“自定义图片”从相册选一张。", @"r": @[
+            @{@"t": @"显示内容", @"k": @"centerStyle", @"y": @"ch", @"d": @"cover", @"o": center},
+            @{@"t": @"点击功能", @"k": @"centerAct", @"y": @"ch", @"d": @"music", @"o": act},
+            @{@"t": @"选择自定义图片…", @"k": @"pickimg", @"y": @"ac"}]},
+        @{@"h": @"玻璃效果", @"f": @"修改后需重启微信生效。液态玻璃仅 iOS 26 可用，其他系统自动使用毛玻璃。", @"r": @[
+            @{@"t": @"样式", @"k": @"glass", @"y": @"ch", @"d": @"bent", @"o": glass}]},
         @{@"h": @"音乐", @"f": @"QQ 音乐及网易云兜底走 Meting 兼容接口，可换成自己的地址。", @"r": @[
             @{@"t": @"默认搜索来源", @"k": @"searchSrc", @"y": @"ch", @"d": @"netease", @"o": src},
             @{@"t": @"Meting API 地址", @"k": @"meting", @"y": @"tx", @"d": @"https://api.injahow.cn/meting/"},
             @{@"t": @"清空播放列表", @"k": @"clearq", @"y": @"ac"}]},
-        @{@"h": @"快捷面板显示项目", @"f": @"没有 URL 对应的项目点击会提示暂未接入。", @"r": qk},
+        @{@"h": @"快捷面板显示项目", @"f": @"没有对应入口的项目点击会提示暂未接入。", @"r": qk},
         @{@"h": @"", @"r": @[@{@"t": @"恢复默认设置", @"k": @"reset", @"y": @"ac"}]},
     ];
 }
@@ -806,7 +972,26 @@ UIView *LTBEntryPill(void) { return [LTBEntry new]; }
         [a addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { LTBSetStr(r[@"k"], a.textFields[0].text); [t reloadData]; }]];
         [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]]; [self presentViewController:a animated:YES completion:nil];
     } else if ([y isEqual:@"ac"]) {
-        if ([r[@"k"] isEqual:@"clearq"]) [LTBP clear]; else { LTBResetPrefs(); [t reloadData]; }
+        NSString *k = r[@"k"];
+        if ([k isEqual:@"clearq"]) [LTBP clear];
+        else if ([k isEqual:@"pickimg"]) {
+            UIImagePickerController *p = [UIImagePickerController new]; p.sourceType = UIImagePickerControllerSourceTypePhotoLibrary; p.delegate = self;
+            [self presentViewController:p animated:YES completion:nil];
+        } else { LTBResetPrefs(); [t reloadData]; }
     }
 }
+- (void)imagePickerController:(UIImagePickerController *)p didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> *)info {
+    UIImage *img = info[UIImagePickerControllerOriginalImage];
+    if (img) {
+        CGFloat s = 256; UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(s, s)];
+        UIImage *sq = [r imageWithActions:^(UIGraphicsImageRendererContext *c) {
+            CGFloat m = MIN(img.size.width, img.size.height), k = s / m; CGFloat w = img.size.width * k, h = img.size.height * k;
+            [img drawInRect:CGRectMake((s - w) / 2, (s - h) / 2, w, h)];
+        }];
+        NSString *path = [[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"ltb_center.jpg"] copy];
+        if ([UIImageJPEGRepresentation(sq, 0.9) writeToFile:path atomically:YES]) { LTBSetStr(@"centerPhoto", path); LTBSetStr(@"centerStyle", @"photo"); }
+    }
+    [p dismissViewControllerAnimated:YES completion:nil]; [self.tableView reloadData];
+}
+- (void)imagePickerControllerDidCancel:(UIImagePickerController *)p { [p dismissViewControllerAnimated:YES completion:nil]; }
 @end
