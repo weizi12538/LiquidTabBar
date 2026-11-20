@@ -138,43 +138,80 @@ static UIBezierPath *Pillow(CGRect r, CGFloat cr, CGFloat btop, CGFloat bbot, CG
     [p closePath];
     return p;
 }
-// bent capsule: constant thickness (2*rad) along a parabola, ends lower than the middle by `drop` (the reference's banana shape)
-static CGFloat CapCY(CGRect r, CGFloat rad, CGFloat drop, CGFloat x) {
-    CGFloat hs = MAX(1.0, r.size.width / 2 - rad), u = MAX(-1.0, MIN(1.0, (x - CGRectGetMidX(r)) / hs));
-    return r.origin.y + r.size.height / 2 - drop / 2 + drop * u * u;
+// bent band (the reference's banana shape): mid half-thickness `rad`, both ends are `dh` thicker, the whole band bends down by `drop` at the ends
+static CGFloat BandU(CGRect r, CGFloat rad, CGFloat dh, CGFloat x, CGFloat *hsOut) {
+    CGFloat hs = MAX(1.0, r.size.width / 2 - (rad + dh)); if (hsOut) *hsOut = hs;
+    return MAX(-1.0, MIN(1.0, (x - CGRectGetMidX(r)) / hs));
 }
-static CGFloat CapAngle(CGRect r, CGFloat rad, CGFloat drop, CGFloat x) {
-    CGFloat hs = MAX(1.0, r.size.width / 2 - rad), u = MAX(-1.0, MIN(1.0, (x - CGRectGetMidX(r)) / hs));
-    return atan(2 * drop * u / hs);
+static CGFloat CapCY(CGRect r, CGFloat rad, CGFloat drop, CGFloat dh, CGFloat x) {
+    CGFloat u = BandU(r, rad, dh, x, NULL); return r.origin.y + rad + drop * u * u;
 }
-static UIBezierPath *ArcCapsule(CGRect r, CGFloat rad, CGFloat drop) {
-    CGFloat x0 = r.origin.x + rad, x1 = CGRectGetMaxX(r) - rad; int N = 36, C = 14;
-    UIBezierPath *p = [UIBezierPath bezierPath];
-    void (^frame)(CGFloat, CGFloat *, CGFloat *, CGFloat *, CGFloat *, CGFloat *) = ^(CGFloat x, CGFloat *cy, CGFloat *nx, CGFloat *ny, CGFloat *tx, CGFloat *ty) {
-        CGFloat hs = MAX(1.0, (x1 - x0) / 2), u = (x - (x0 + x1) / 2) / hs, s = 2 * drop * u / hs, k = sqrt(1 + s * s);
-        *cy = r.origin.y + r.size.height / 2 - drop / 2 + drop * u * u; *nx = s / k; *ny = -1 / k; *tx = 1 / k; *ty = s / k;
+static CGFloat CapAngle(CGRect r, CGFloat rad, CGFloat drop, CGFloat dh, CGFloat x) {
+    CGFloat hs, u = BandU(r, rad, dh, x, &hs); return atan(2 * drop * u / hs);
+}
+static UIBezierPath *ArcCapsule(CGRect r, CGFloat rad, CGFloat drop, CGFloat dh) {
+    CGFloat rEnd = rad + dh, x0 = r.origin.x + rEnd, x1 = CGRectGetMaxX(r) - rEnd, mx = (x0 + x1) / 2, hs = MAX(1.0, (x1 - x0) / 2);
+    int N = 40, C = 16; UIBezierPath *p = [UIBezierPath bezierPath];
+    void (^fr)(CGFloat, CGFloat *, CGFloat *, CGFloat *, CGFloat *, CGFloat *, CGFloat *) = ^(CGFloat x, CGFloat *cy, CGFloat *half, CGFloat *nx, CGFloat *ny, CGFloat *tx, CGFloat *ty) {
+        CGFloat u = (x - mx) / hs, s = 2 * drop * u / hs, k = sqrt(1 + s * s);
+        *cy = r.origin.y + rad + drop * u * u; *half = rad + dh * u * u; *nx = s / k; *ny = -1 / k; *tx = 1 / k; *ty = s / k;
     };
-    CGFloat cy, nx, ny, tx, ty;
+    CGFloat cy, hf, nx, ny, tx, ty;
     for (int i = 0; i <= N; i++) {
-        CGFloat x = x0 + (x1 - x0) * i / N; frame(x, &cy, &nx, &ny, &tx, &ty);
-        CGPoint pt = CGPointMake(x + rad * nx, cy + rad * ny); if (i == 0) [p moveToPoint:pt]; else [p addLineToPoint:pt];
+        CGFloat x = x0 + (x1 - x0) * i / N; fr(x, &cy, &hf, &nx, &ny, &tx, &ty);
+        CGPoint pt = CGPointMake(x + hf * nx, cy + hf * ny); if (i == 0) [p moveToPoint:pt]; else [p addLineToPoint:pt];
     }
-    frame(x1, &cy, &nx, &ny, &tx, &ty);
-    for (int j = 1; j < C; j++) { CGFloat th = M_PI * j / C; [p addLineToPoint:CGPointMake(x1 + rad * (cos(th) * nx + sin(th) * tx), cy + rad * (cos(th) * ny + sin(th) * ty))]; }
+    fr(x1, &cy, &hf, &nx, &ny, &tx, &ty);
+    for (int j = 1; j < C; j++) { CGFloat th = M_PI * j / C; [p addLineToPoint:CGPointMake(x1 + hf * (cos(th) * nx + sin(th) * tx), cy + hf * (cos(th) * ny + sin(th) * ty))]; }
     for (int i = N; i >= 0; i--) {
-        CGFloat x = x0 + (x1 - x0) * i / N; frame(x, &cy, &nx, &ny, &tx, &ty); [p addLineToPoint:CGPointMake(x - rad * nx, cy - rad * ny)];
+        CGFloat x = x0 + (x1 - x0) * i / N; fr(x, &cy, &hf, &nx, &ny, &tx, &ty); [p addLineToPoint:CGPointMake(x - hf * nx, cy - hf * ny)];
     }
-    frame(x0, &cy, &nx, &ny, &tx, &ty);
-    for (int j = 1; j < C; j++) { CGFloat th = M_PI + M_PI * j / C; [p addLineToPoint:CGPointMake(x0 + rad * (cos(th) * nx + sin(th) * tx), cy + rad * (cos(th) * ny + sin(th) * ty))]; }
+    fr(x0, &cy, &hf, &nx, &ny, &tx, &ty);
+    for (int j = 1; j < C; j++) { CGFloat th = M_PI + M_PI * j / C; [p addLineToPoint:CGPointMake(x0 + hf * (cos(th) * nx + sin(th) * tx), cy + hf * (cos(th) * ny + sin(th) * ty))]; }
     [p closePath];
     return p;
 }
+
+#pragma mark - liquid glass look (self-drawn): milky fill + sheen + inner glow + bright rim
+@interface LTBFX : NSObject
+- (instancetype)initWithHost:(CALayer *)host;
+- (void)update:(CGPathRef)path bounds:(CGRect)b traits:(UITraitCollection *)tc;
+- (void)setHidden:(BOOL)h;
+@end
+@implementation LTBFX {
+    CAShapeLayer *_fill, *_glow, *_glowMask, *_rim, *_sheenMask; CAGradientLayer *_sheen;
+}
+- (instancetype)initWithHost:(CALayer *)host {
+    if (!(self = [super init])) return nil;
+    _fill = [CAShapeLayer layer];
+    _sheen = [CAGradientLayer layer]; _sheen.locations = @[@0, @0.36, @0.70, @1]; _sheen.startPoint = CGPointMake(0.5, 0); _sheen.endPoint = CGPointMake(0.5, 1);
+    _sheenMask = [CAShapeLayer layer]; _sheen.mask = _sheenMask;
+    _glow = [CAShapeLayer layer]; _glow.fillColor = nil; _glow.lineWidth = 8; _glowMask = [CAShapeLayer layer]; _glow.mask = _glowMask;
+    _rim = [CAShapeLayer layer]; _rim.fillColor = nil; _rim.lineWidth = 2.2;
+    for (CALayer *l in @[_fill, _sheen, _glow, _rim]) [host addSublayer:l];
+    return self;
+}
+- (void)setHidden:(BOOL)h { for (CALayer *l in @[_fill, _sheen, _glow, _rim]) l.hidden = h; }
+- (void)update:(CGPathRef)path bounds:(CGRect)b traits:(UITraitCollection *)tc {
+    BOOL dark = tc.userInterfaceStyle == UIUserInterfaceStyleDark;
+    UIColor *W = UIColor.whiteColor, *K = UIColor.blackColor, *C0 = [UIColor colorWithWhite:1 alpha:0];
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    for (CAShapeLayer *l in @[_fill, _glow, _rim, _sheenMask, _glowMask]) { l.frame = b; l.path = path; }
+    _sheen.frame = b;
+    _fill.fillColor = (dark ? [UIColor colorWithWhite:0.20 alpha:0.62] : [UIColor colorWithWhite:0.97 alpha:0.74]).CGColor;
+    _glow.strokeColor = [W colorWithAlphaComponent:dark ? 0.12 : 0.55].CGColor;
+    _rim.strokeColor = [W colorWithAlphaComponent:dark ? 0.30 : 0.98].CGColor;
+    _sheen.colors = dark ? @[(id)[W colorWithAlphaComponent:0.14].CGColor, (id)C0.CGColor, (id)C0.CGColor, (id)[K colorWithAlphaComponent:0.28].CGColor]
+                         : @[(id)[W colorWithAlphaComponent:0.40].CGColor, (id)C0.CGColor, (id)C0.CGColor, (id)[K colorWithAlphaComponent:0.09].CGColor];
+    [CATransaction commit];
+}
+@end
 
 #pragma mark - glass
 // iOS 26 Liquid Glass (UIGlassEffect). Falls back to a blurred, self-drawn glass on older systems or when chosen in settings.
 static NSString *GlassMode(void) {
     if (!NSClassFromString(@"UIGlassEffect")) return @"blur";
-    return LTBStr(@"glass", @"bent");
+    return [LTBStr(@"glass", @"blur") isEqual:@"flat"] ? @"flat" : @"blur";
 }
 static UIVisualEffectView *MakeGlass(void) {
     Class gc = NSClassFromString(@"UIGlassEffect"); id e = [[gc alloc] init];
@@ -196,7 +233,7 @@ static void GlassShape(UIView *v, CGFloat r, BOOL capsule) {
 @property(nonatomic, readonly) UIView *contentView;
 @end
 @implementation LTBGlass {
-    UIVisualEffectView *_blur, *_gv; CAShapeLayer *_fill, *_rim, *_mask; UIView *_content; BOOL _native;
+    UIVisualEffectView *_blur, *_gv; LTBFX *_fx; CAShapeLayer *_mask; UIView *_content; BOOL _native;
 }
 - (instancetype)init {
     if (!(self = [super init])) return nil;
@@ -204,33 +241,22 @@ static void GlassShape(UIView *v, CGFloat r, BOOL capsule) {
     if (_native) { _gv = MakeGlass(); [self addSubview:_gv]; }
     else {
         _blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]]; [self addSubview:_blur];
-        _fill = [CAShapeLayer layer]; [self.layer addSublayer:_fill];
-    }
-    _content = [UIView new]; _content.backgroundColor = UIColor.clearColor; [self addSubview:_content];
-    if (!_native) {
-        _rim = [CAShapeLayer layer]; _rim.fillColor = nil; _rim.lineWidth = 1.4; [self.layer addSublayer:_rim];
+        _fx = [[LTBFX alloc] initWithHost:self.layer];
         _mask = [CAShapeLayer layer]; self.layer.mask = _mask;
     }
+    _content = [UIView new]; _content.backgroundColor = UIColor.clearColor; [self addSubview:_content];
     return self;
 }
 - (UIView *)contentView { return _content; }
-- (void)updateColors {
-    if (_native) return;
-    UITraitCollection *tc = self.traitCollection;
-    _fill.fillColor = [Dyn(1, 0.62, 0.10, 0.52) resolvedColorWithTraitCollection:tc].CGColor;
-    _rim.strokeColor = [Dyn(1.0, 0.95, 1.0, 0.22) resolvedColorWithTraitCollection:tc].CGColor;
-}
-- (void)traitCollectionDidChange:(UITraitCollection *)p { [super traitCollectionDidChange:p]; [self updateColors]; }
+- (void)traitCollectionDidChange:(UITraitCollection *)p { [super traitCollectionDidChange:p]; [self setNeedsLayout]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGRect b = self.bounds; _content.frame = b; if (b.size.width < 2) return;
     if (_native) { _gv.frame = b; CGFloat m = MIN(b.size.width, b.size.height) / 2, r = MIN(_radius, m); GlassShape(_gv, r, r >= m - 0.5); return; }
     _blur.frame = b;
     UIBezierPath *p = Pillow(b, _radius, _bulge, _bulge * 0.5, _bulge * 0.4);
-    [CATransaction begin]; [CATransaction setDisableActions:YES];
-    _fill.frame = b; _fill.path = p.CGPath; _rim.frame = b; _rim.path = p.CGPath; _mask.frame = b; _mask.path = p.CGPath;
-    [CATransaction commit];
-    [self updateColors];
+    [CATransaction begin]; [CATransaction setDisableActions:YES]; _mask.frame = b; _mask.path = p.CGPath; [CATransaction commit];
+    [_fx update:p.CGPath bounds:b traits:self.traitCollection];
 }
 @end
 
@@ -253,13 +279,13 @@ static void GlassShape(UIView *v, CGFloat r, BOOL capsule) {
 
 @implementation LTBBar {
     UIVisualEffectView *_blur, *_tabHost, *_stripG, *_lG, *_rG; NSMutableArray<UIVisualEffectView *> *_segs;
-    CAShapeLayer *_fill, *_rim, *_mask; BOOL _glass; NSString *_mode;
+    LTBFX *_fx; CAShapeLayer *_mask; BOOL _glass; NSString *_mode;
     UIView *_pill, *_p0, *_p1, *_trk, *_fil;
     NSMutableArray<UIButton *> *_items; NSMutableArray<UILabel *> *_badges; NSMutableArray<NSString *> *_badgeCache;
     UIButton *_prev, *_play, *_next, *_lb, *_rb;
     UIImageView *_art, *_disc; UIScrollView *_sv; UIPageControl *_pc;
     UILabel *_title, *_artist, *_searchLbl;
-    NSInteger _sel; CGFloat _stripTop, _tabRad, _tabDrop; CGRect _tabR, _stripR;
+    NSInteger _sel; CGFloat _stripTop, _tabRad, _tabDrop, _tabDh; CGRect _tabR, _stripR;
 }
 - (CGFloat)stripTop { return _stripTop; }
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e { UIView *v = [super hitTest:p withEvent:e]; return v == self ? nil : v; }
@@ -267,14 +293,13 @@ static void GlassShape(UIView *v, CGFloat r, BOOL capsule) {
 - (instancetype)initWithFrame:(CGRect)f controller:(UITabBarController *)t {
     if (!(self = [super initWithFrame:f])) return nil;
     _tbc = t; _items = [NSMutableArray array]; _badges = [NSMutableArray array]; _badgeCache = [NSMutableArray array]; _sel = -1;
-    _mode = GlassMode(); _glass = ![_mode isEqual:@"blur"]; _tabRad = 27; _tabDrop = [_mode isEqual:@"flat"] ? 0 : 26;
+    _mode = GlassMode(); _glass = ![_mode isEqual:@"blur"]; _tabRad = 25; _tabDrop = [_mode isEqual:@"flat"] ? 0 : 13; _tabDh = [_mode isEqual:@"flat"] ? 0 : 4;
     _blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]];
     [self addSubview:_blur];
-    _fill = [CAShapeLayer layer]; _rim = [CAShapeLayer layer]; _rim.fillColor = nil; _rim.lineWidth = 1.6;
-    [self.layer addSublayer:_fill]; [self.layer addSublayer:_rim];
+    _fx = [[LTBFX alloc] initWithHost:self.layer];
     _mask = [CAShapeLayer layer]; _blur.layer.mask = _mask;
     if (_glass) {
-        _blur.hidden = YES; _fill.hidden = YES; _rim.hidden = YES;
+        _blur.hidden = YES; [_fx setHidden:YES];
         // the bent tab bar is several overlapping glass capsules in one glass container so they merge into one liquid shape
         Class gcc = NSClassFromString(@"UIGlassContainerEffect"); id ce = gcc ? [[gcc alloc] init] : nil;
         _tabHost = [[UIVisualEffectView alloc] initWithEffect:(UIVisualEffect *)ce]; [self addSubview:_tabHost];
@@ -294,8 +319,8 @@ static void GlassShape(UIView *v, CGFloat r, BOOL capsule) {
         else [b setImage:[it.image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate] forState:UIControlStateNormal];
         [b addTarget:self action:@selector(tapItem:) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:b]; [_items addObject:b];
-        UILabel *bg = [UILabel new]; bg.backgroundColor = UIColor.labelColor; bg.textColor = UIColor.systemBackgroundColor; bg.font = [UIFont boldSystemFontOfSize:9.5];
-        bg.textAlignment = NSTextAlignmentCenter; bg.layer.cornerRadius = 7.5; bg.clipsToBounds = YES; bg.hidden = YES; bg.userInteractionEnabled = NO;
+        UILabel *bg = [UILabel new]; bg.backgroundColor = UIColor.labelColor; bg.textColor = UIColor.systemBackgroundColor; bg.font = [UIFont boldSystemFontOfSize:8.5];
+        bg.textAlignment = NSTextAlignmentCenter; bg.layer.cornerRadius = 7; bg.clipsToBounds = YES; bg.hidden = YES; bg.userInteractionEnabled = NO;
         [self addSubview:bg]; [_badges addObject:bg]; [_badgeCache addObject:@""];
     }
     _disc = [UIImageView new]; _disc.contentMode = UIViewContentModeScaleAspectFill; _disc.clipsToBounds = YES; _disc.userInteractionEnabled = YES;
@@ -312,7 +337,7 @@ static void GlassShape(UIView *v, CGFloat r, BOOL capsule) {
     _artist = [UILabel new]; _artist.font = [UIFont systemFontOfSize:12]; _artist.textColor = UIColor.secondaryLabelColor;
     _trk = [UIView new]; _trk.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.25]; _trk.layer.cornerRadius = 1;
     _fil = [UIView new]; _fil.backgroundColor = UIColor.labelColor; _fil.layer.cornerRadius = 1; [_trk addSubview:_fil];
-    _prev = Btn(@"backward.end.fill", 15, self, @selector(doPrev)); _play = Btn(@"play.fill", 19, self, @selector(doPlay)); _next = Btn(@"forward.end.fill", 15, self, @selector(doNext));
+    _prev = Btn(@"backward.end.fill", 12, self, @selector(doPrev)); _play = Btn(@"play.fill", 16, self, @selector(doPlay)); _next = Btn(@"forward.end.fill", 12, self, @selector(doNext));
     for (UIView *v in @[_art, _title, _artist, _trk, _prev, _play, _next]) [_p0 addSubview:v];
     _searchLbl = [UILabel new]; _searchLbl.text = @"搜索音乐、歌手"; _searchLbl.font = [UIFont systemFontOfSize:14]; _searchLbl.textColor = UIColor.secondaryLabelColor; _searchLbl.textAlignment = NSTextAlignmentCenter; _searchLbl.userInteractionEnabled = YES;
     [_searchLbl addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapSearch)]];
@@ -344,24 +369,21 @@ static NSString *ActSym(NSString *a) {
     [_rb setImage:SF(ActSym(LTBStr(@"rightAct", @"quick")), 21, UIImageSymbolWeightRegular) forState:UIControlStateNormal];
     [self refreshCenter]; [self setNeedsLayout];
 }
-- (void)updateColors {
-    if (_glass) return;
-    UITraitCollection *tc = self.traitCollection;
-    _fill.fillColor = [Dyn(1, 0.60, 0.10, 0.50) resolvedColorWithTraitCollection:tc].CGColor;
-    _rim.strokeColor = [Dyn(1.0, 0.95, 1.0, 0.25) resolvedColorWithTraitCollection:tc].CGColor;
-}
-- (void)traitCollectionDidChange:(UITraitCollection *)p { [super traitCollectionDidChange:p]; [self updateColors]; }
+- (void)traitCollectionDidChange:(UITraitCollection *)p { [super traitCollectionDidChange:p]; [self setNeedsLayout]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
+    // geometry measured from the reference video (points at a 393pt-wide screen)
     CGFloat W = self.bounds.size.width, H = self.bounds.size.height, safe = self.safeAreaInsets.bottom;
-    BOOL flat = _tabDrop == 0; CGFloat tabRad = _tabRad, tabDrop = _tabDrop, sRad = 23, sDrop = flat ? 0 : 8, bsz = 44, side = round(W * 0.05), mB = MAX(safe - 14, 10);
+    BOOL flat = _tabDrop == 0; CGFloat tabRad = _tabRad, tabDrop = _tabDrop, tabDh = _tabDh;
+    CGFloat sRad = 21.5, sDrop = flat ? 0 : 8, sDh = flat ? 0 : 2, bsz = 43, side = round(W * 0.049), mB = MAX(safe - 14, 10);
     NSString *sm = LTBStr(@"stripMode", @"both"); BOOL stripOff = [sm isEqual:@"off"];
-    _tabR = CGRectMake(side, H - mB - (2 * tabRad + tabDrop), W - 2 * side, 2 * tabRad + tabDrop);
-    CGFloat sTop = _tabR.origin.y - 2 * sRad - 5; _stripTop = sTop;
+    CGFloat tabH = 2 * tabRad + tabDrop + tabDh;
+    _tabR = CGRectMake(side, H - mB - tabH, W - 2 * side, tabH);
+    CGFloat sTop = _tabR.origin.y - 2 * sRad - 7; _stripTop = sTop;
     BOOL sl = LTBBool(@"showLeft", YES), sr = LTBBool(@"showRight", YES);
-    CGFloat bx = round(W * 0.043), x0 = sl ? bx + bsz + 10 : side, x1 = sr ? W - bx - bsz - 10 : W - side;
-    _stripR = CGRectMake(x0, sTop, x1 - x0, 2 * sRad + sDrop);
-    CGFloat by = flat ? sTop + sRad - bsz / 2 + 2 : sTop + sRad + 12;
+    CGFloat bx = round(W * 0.043), x0 = sl ? bx + bsz + 12 : side, x1 = sr ? W - bx - bsz - 12 : W - side;
+    _stripR = CGRectMake(x0, sTop, x1 - x0, 2 * sRad + sDrop + sDh);
+    CGFloat by = sTop + sRad + sDrop + 8 - bsz / 2; if (flat) by = sTop + sRad - bsz / 2;
     CGRect lr = CGRectMake(bx, by, bsz, bsz), rr = CGRectMake(W - bx - bsz, by, bsz, bsz);
     _lb.hidden = !sl; _rb.hidden = !sr; _lb.frame = lr; _rb.frame = rr;
 
@@ -369,55 +391,52 @@ static NSString *ActSym(NSString *a) {
         _tabHost.frame = _tabR; CGRect lt = CGRectMake(0, 0, _tabR.size.width, _tabR.size.height); NSUInteger N = _segs.count;
         for (NSUInteger k = 0; k < N; k++) {
             UIVisualEffectView *g = _segs[k]; g.transform = CGAffineTransformIdentity;
-            if (N == 1) { g.bounds = CGRectMake(0, 0, lt.size.width, 2 * tabRad); g.center = CGPointMake(lt.size.width / 2, lt.size.height / 2); GlassShape(g, tabRad, YES); continue; }
-            CGFloat xa = tabRad, xb = lt.size.width - tabRad, step = (xb - xa) / (N - 1), cx = xa + step * k;
-            CGFloat w = (k == 0 || k == N - 1) ? 2 * tabRad : MAX(2 * tabRad, step * 2.0);
-            g.bounds = CGRectMake(0, 0, w, 2 * tabRad); g.center = CGPointMake(cx, CapCY(lt, tabRad, tabDrop, cx)); GlassShape(g, tabRad, YES);
-            g.transform = CGAffineTransformMakeRotation(CapAngle(lt, tabRad, tabDrop, cx));
+            g.bounds = CGRectMake(0, 0, lt.size.width, 2 * tabRad); g.center = CGPointMake(lt.size.width / 2, lt.size.height / 2); GlassShape(g, tabRad, YES);
         }
-        _stripG.hidden = stripOff; _stripG.frame = CGRectMake(_stripR.origin.x, _stripR.origin.y + sDrop / 2, _stripR.size.width, 2 * sRad); GlassShape(_stripG, sRad, YES);
+        _stripG.hidden = stripOff; _stripG.frame = CGRectMake(_stripR.origin.x, _stripR.origin.y, _stripR.size.width, 2 * sRad); GlassShape(_stripG, sRad, YES);
         _lG.hidden = !sl; _rG.hidden = !sr; _lG.frame = lr; _rG.frame = rr; GlassShape(_lG, bsz / 2, YES); GlassShape(_rG, bsz / 2, YES);
     } else {
         UIBezierPath *all = [UIBezierPath bezierPath];
-        [all appendPath:ArcCapsule(_tabR, tabRad, tabDrop)]; if (!stripOff) [all appendPath:ArcCapsule(_stripR, sRad, sDrop)];
+        [all appendPath:ArcCapsule(_tabR, tabRad, tabDrop, tabDh)]; if (!stripOff) [all appendPath:ArcCapsule(_stripR, sRad, sDrop, sDh)];
         if (sl) [all appendPath:[UIBezierPath bezierPathWithOvalInRect:lr]];
         if (sr) [all appendPath:[UIBezierPath bezierPathWithOvalInRect:rr]];
         [CATransaction begin]; [CATransaction setDisableActions:YES];
         _blur.frame = self.bounds; _mask.frame = self.bounds; _mask.path = all.CGPath;
-        _fill.frame = self.bounds; _fill.path = all.CGPath; _rim.frame = self.bounds; _rim.path = all.CGPath;
         [CATransaction commit];
-        [self updateColors];
+        [_fx update:all.CGPath bounds:self.bounds traits:self.traitCollection];
     }
 
-    NSUInteger n = _items.count, slots = n + 1, di = n / 2; CGFloat ix0 = _tabR.origin.x + 24, sw = (_tabR.size.width - 48) / slots;
+    NSUInteger n = _items.count, slots = n + 1, di = n / 2; CGFloat ix0 = _tabR.origin.x + 12, sw = (_tabR.size.width - 24) / slots;
     for (NSUInteger i = 0; i < n; i++) {
-        NSUInteger slot = i < di ? i : i + 1; CGFloat cx = ix0 + sw * (slot + 0.5), cy = CapCY(_tabR, tabRad, tabDrop, cx);
+        NSUInteger slot = i < di ? i : i + 1; CGFloat cx = ix0 + sw * (slot + 0.5), cy = CapCY(_tabR, tabRad, tabDrop, tabDh, cx);
         _items[i].bounds = CGRectMake(0, 0, MIN(sw, 56), 50); _items[i].center = CGPointMake(cx, cy);
-        CGFloat bw = MAX(15, _badges[i].frame.size.width); _badges[i].frame = CGRectMake(cx + 3, cy - 20, bw, 15);
+        CGFloat bw = MAX(14, _badges[i].frame.size.width); _badges[i].frame = CGRectMake(cx + 4, cy - 19, bw, 14);
     }
-    CGFloat dcx = ix0 + sw * (di + 0.5); _disc.bounds = CGRectMake(0, 0, 42, 42); _disc.center = CGPointMake(dcx, CapCY(_tabR, tabRad, tabDrop, dcx)); _disc.layer.cornerRadius = 21;
+    CGFloat dcx = ix0 + sw * (di + 0.5); _disc.bounds = CGRectMake(0, 0, 38, 38); _disc.center = CGPointMake(dcx, CapCY(_tabR, tabRad, tabDrop, tabDh, dcx)); _disc.layer.cornerRadius = 19;
     [self placePill:NO];
 
     NSMutableArray *pages = [NSMutableArray array];
     if ([sm isEqual:@"both"] || [sm isEqual:@"mini"]) [pages addObject:_p0];
     if ([sm isEqual:@"both"] || [sm isEqual:@"search"]) [pages addObject:_p1];
     _sv.hidden = stripOff; _p0.hidden = ![pages containsObject:_p0]; _p1.hidden = ![pages containsObject:_p1];
-    CGFloat w = _stripR.size.width - 16, h = 2 * sRad;
-    _sv.frame = CGRectMake(_stripR.origin.x + 8, _stripR.origin.y + (flat ? 0 : 2), w, h); _sv.contentSize = CGSizeMake(w * MAX(pages.count, 1), h);
+    CGFloat w = _stripR.size.width - 12, h = 2 * sRad + (flat ? 0 : 6);
+    _sv.frame = CGRectMake(_stripR.origin.x + 6, _stripR.origin.y, w, h); _sv.contentSize = CGSizeMake(w * MAX(pages.count, 1), h);
     for (NSUInteger k = 0; k < pages.count; k++) ((UIView *)pages[k]).frame = CGRectMake(w * k, 0, w, h);
-    _pc.numberOfPages = pages.count; _pc.hidden = stripOff || pages.count < 2; _pc.frame = CGRectMake(_stripR.origin.x, CGRectGetMaxY(_stripR) - 14, _stripR.size.width - 8, 8);
-    CGFloat tw2 = w - 54 - 128;
-    _art.frame = CGRectMake(4, 3, 40, 40); _art.layer.cornerRadius = 20;
-    _title.frame = CGRectMake(54, 5, tw2, 19); _artist.frame = CGRectMake(54, 24, tw2, 14);
-    _trk.frame = CGRectMake(54, 41, MIN(tw2, 130), 2); [self progress];
-    _prev.frame = CGRectMake(w - 124, 6, 36, 34); _play.frame = CGRectMake(w - 84, 6, 36, 34); _next.frame = CGRectMake(w - 44, 6, 36, 34);
+    _pc.numberOfPages = pages.count; _pc.hidden = stripOff || pages.count < 2; _pc.frame = CGRectMake(_stripR.origin.x, CGRectGetMaxY(_stripR) - 13, _stripR.size.width - 10, 8);
+    CGFloat tw2 = w - 46 - 78;
+    _art.frame = CGRectMake(5, (flat ? 6 : 10), 31, 31); _art.layer.cornerRadius = 15.5;
+    _title.frame = CGRectMake(46, (flat ? 3 : 7), tw2, 20); _artist.frame = CGRectMake(46, (flat ? 22 : 26), tw2, 14);
+    _trk.frame = CGRectMake(46, (flat ? 38 : 42), MIN(tw2, 118), 2); [self progress];
+    CGFloat cyc = flat ? 22 : 27; CGFloat nxc = w - 20, plc = nxc - 24, pvc = plc - 24;
+    _prev.bounds = _play.bounds = _next.bounds = CGRectMake(0, 0, 34, 34);
+    _prev.center = CGPointMake(pvc, cyc); _play.center = CGPointMake(plc, cyc); _next.center = CGPointMake(nxc, cyc);
     _searchLbl.frame = CGRectMake(12, 0, w - 24, h);
 }
 - (void)placePill:(BOOL)anim {
     if (_sel < 0 || _sel >= (NSInteger)_items.count) return;
-    UIButton *b = _items[_sel]; CGFloat pw = _tabR.size.width * 0.225, ph = 46;
+    UIButton *b = _items[_sel]; CGFloat pw = _tabR.size.width * 0.23, ph = 46;
     CGFloat cx = MAX(_tabR.origin.x + 6 + pw / 2, MIN(b.center.x, CGRectGetMaxX(_tabR) - 6 - pw / 2));
-    CGPoint c = CGPointMake(cx, CapCY(_tabR, _tabRad, _tabDrop, cx)); CGFloat ang = CapAngle(_tabR, _tabRad, _tabDrop, cx);
+    CGPoint c = CGPointMake(cx, CapCY(_tabR, _tabRad, _tabDrop, _tabDh, cx)); CGFloat ang = CapAngle(_tabR, _tabRad, _tabDrop, _tabDh, cx);
     void (^set)(void) = ^{
         self->_pill.transform = CGAffineTransformIdentity; self->_pill.bounds = CGRectMake(0, 0, pw, ph); self->_pill.center = c;
         self->_pill.layer.cornerRadius = ph / 2; self->_pill.transform = CGAffineTransformMakeRotation(ang);
@@ -432,7 +451,7 @@ static NSString *ActSym(NSString *a) {
     for (NSUInteger i = 0; i < _badges.count && i < _tbc.viewControllers.count; i++) {
         NSString *v = _tbc.viewControllers[i].tabBarItem.badgeValue ?: @""; if ([v isEqualToString:_badgeCache[i]]) continue;
         _badgeCache[i] = v; UILabel *l = _badges[i]; l.hidden = v.length == 0;
-        if (v.length) { l.text = v; CGFloat w = MAX(15, [v sizeWithAttributes:@{NSFontAttributeName: l.font}].width + 8); CGRect f = l.frame; f.size = CGSizeMake(w, 15); l.frame = f; }
+        if (v.length) { l.text = v; CGFloat w = MAX(14, [v sizeWithAttributes:@{NSFontAttributeName: l.font}].width + 7); CGRect f = l.frame; f.size = CGSizeMake(w, 14); l.frame = f; }
     }
 }
 - (void)tapItem:(UIButton *)b {
@@ -450,7 +469,7 @@ static NSString *ActSym(NSString *a) {
     _title.text = s.name ?: @"未在播放"; _artist.text = s.artist ?: @"点击打开音乐面板";
     if (!s.pic) { _art.image = SF(@"music.note", 18, UIImageSymbolWeightRegular); _art.tintColor = UIColor.whiteColor; _art.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1]; _art.contentMode = UIViewContentModeCenter; }
     else LTBImage(s.pic, ^(UIImage *i) { if (LTBP.song == s && i) { self->_art.image = i; self->_art.contentMode = UIViewContentModeScaleAspectFill; } });
-    [_play setImage:SF(LTBP.playing ? @"pause.fill" : @"play.fill", 19, UIImageSymbolWeightSemibold) forState:UIControlStateNormal];
+    [_play setImage:SF(LTBP.playing ? @"pause.fill" : @"play.fill", 16, UIImageSymbolWeightSemibold) forState:UIControlStateNormal];
     [self refreshCenter];
 }
 // what the middle button of the tab bar shows: album cover / my avatar / a picked photo / plus / note / nothing
@@ -913,7 +932,7 @@ UIView *LTBEntryPill(void) { return [LTBEntry new]; }
     NSArray *act = @[@[@"scan", @"扫一扫"], @[@"wxsettings", @"微信设置"], @[@"liquidui", @"LiquidUI 设置"], @[@"settings", @"插件设置"], @[@"quick", @"快捷面板"], @[@"music", @"音乐面板"], @[@"inbox", @"微信首页"], @[@"none", @"无操作"]];
     NSArray *strip = @[@[@"both", @"迷你播放器 + 搜索（左右滑动）"], @[@"mini", @"仅迷你播放器"], @[@"search", @"仅搜索"], @[@"off", @"隐藏中间条"]];
     NSArray *center = @[@[@"cover", @"专辑封面"], @[@"avatar", @"我的头像"], @[@"photo", @"自定义图片"], @[@"plus", @"＋ 图标"], @[@"note", @"音符图标"], @[@"none", @"隐藏"]];
-    NSArray *glass = @[@[@"bent", @"液态玻璃 · 弧形（拼接）"], @[@"flat", @"液态玻璃 · 直条"], @[@"blur", @"毛玻璃（旧版）"]];
+    NSArray *glass = @[@[@"blur", @"液态弧形（自绘，与效果图一致）"], @[@"flat", @"系统液态玻璃 · 直条（iOS 26）"]];
     NSMutableArray *qk = [NSMutableArray array];
     for (NSDictionary *d in QuickItems()) [qk addObject:@{@"t": d[@"t"], @"k": [@"qk_" stringByAppendingString:d[@"id"]], @"y": @"sw"}];
     _data = @[
@@ -930,8 +949,8 @@ UIView *LTBEntryPill(void) { return [LTBEntry new]; }
             @{@"t": @"显示内容", @"k": @"centerStyle", @"y": @"ch", @"d": @"cover", @"o": center},
             @{@"t": @"点击功能", @"k": @"centerAct", @"y": @"ch", @"d": @"music", @"o": act},
             @{@"t": @"选择自定义图片…", @"k": @"pickimg", @"y": @"ac"}]},
-        @{@"h": @"玻璃效果", @"f": @"修改后需重启微信生效。液态玻璃仅 iOS 26 可用，其他系统自动使用毛玻璃。", @"r": @[
-            @{@"t": @"样式", @"k": @"glass", @"y": @"ch", @"d": @"bent", @"o": glass}]},
+        @{@"h": @"玻璃效果", @"f": @"修改后需重启微信生效。系统液态玻璃仅 iOS 26 可用，且无法做成弧形，只有直条。", @"r": @[
+            @{@"t": @"样式", @"k": @"glass", @"y": @"ch", @"d": @"blur", @"o": glass}]},
         @{@"h": @"音乐", @"f": @"QQ 音乐及网易云兜底走 Meting 兼容接口，可换成自己的地址。", @"r": @[
             @{@"t": @"默认搜索来源", @"k": @"searchSrc", @"y": @"ch", @"d": @"netease", @"o": src},
             @{@"t": @"Meting API 地址", @"k": @"meting", @"y": @"tx", @"d": @"https://api.injahow.cn/meting/"},
