@@ -1,5 +1,7 @@
 #import "LTB.h"
 #import <objc/runtime.h>
+#pragma clang diagnostic ignored "-Wunused-function"
+#pragma clang diagnostic ignored "-Wunused-variable"
 
 #pragma mark - helpers
 static UIColor *Red(void) { return [UIColor colorWithRed:1 green:0.23 blue:0.19 alpha:1]; }
@@ -26,7 +28,6 @@ static UIButton *Btn(NSString *sym, CGFloat pt, id t, SEL s) {
     [b addTarget:t action:s forControlEvents:UIControlEventTouchUpInside];
     return b;
 }
-static CGFloat ArcY(CGFloat x, CGFloat w, CGFloat A) { CGFloat t = (x - w / 2) / (w / 2); return A * t * t; }
 
 // Quick panel items (same grid as the reference video). "u" = WeChat URL, "a" = internal action, neither = not wired yet
 static NSArray *QuickItems(void) {
